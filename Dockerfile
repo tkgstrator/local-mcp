@@ -19,14 +19,16 @@ COPY . .
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim AS runtime
+# 1000:1000 because that is what the checkout is owned by in a Dev Container
+# and in most single-user setups, so the common case needs no `user:` override.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --create-home --uid 10001 mcp \
+ && groupadd --gid 1000 mcp \
+ && useradd --create-home --uid 1000 --gid 1000 mcp \
  && mkdir -p /workspace \
  && chown mcp:mcp /workspace
 COPY --from=build /src/target/release/local-mcp /usr/local/bin/local-mcp
-# Only a default: run this container as the uid that owns the shared volume.
 USER mcp
 WORKDIR /workspace
 EXPOSE 8080
