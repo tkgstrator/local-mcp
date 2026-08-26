@@ -57,8 +57,10 @@ only what you are willing to lose, and:
   reach the container.
 - **Set `LOCAL_MCP_ALLOW_EXEC=false`** if you only need reads and writes. It
   removes the shell tools from the tool list entirely.
-- `Origin` is validated on every request, as the MCP spec requires, to stop a
-  page in someone's browser from driving the server.
+- `Origin` checking is available via `LOCAL_MCP_ALLOWED_ORIGINS` but off by
+  default. It guards against a page in someone's browser driving the server,
+  which the bearer token already prevents — a browser does not attach an
+  `Authorization` header on its own.
 
 ## Configuration
 
@@ -68,7 +70,7 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_TOKEN` | *(required)* | Bearer token. At least 16 characters. The server refuses to start without it. |
 | `LOCAL_MCP_BIND` | `0.0.0.0:8080` | Listen address. |
 | `LOCAL_MCP_ALLOW_EXEC` | `true` | `false` removes all shell tools. |
-| `LOCAL_MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated origins. Empty means any request carrying `Origin` is refused. |
+| `LOCAL_MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated origins. Empty disables the check; set it to restrict which browser origins may reach the server. |
 | `LOCAL_MCP_MAX_OUTPUT` | `1048576` | Byte ceiling on tool output. |
 | `LOCAL_MCP_COMMAND_TIMEOUT` | `30` | Seconds before `execute` hands back a `job_id`. |
 | `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
