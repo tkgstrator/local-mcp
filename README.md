@@ -71,6 +71,11 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated origins. Empty means any request carrying `Origin` is refused. |
 | `LOCAL_MCP_MAX_OUTPUT` | `1048576` | Byte ceiling on tool output. |
 | `LOCAL_MCP_COMMAND_TIMEOUT` | `30` | Seconds before `execute` hands back a `job_id`. |
+| `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
+
+Every request is logged with its method, path and status, and refusals say
+whether the token was missing or wrong. A client that cannot connect is visible
+here — silence means the request never arrived.
 
 Endpoints: `POST /mcp` (authenticated) and `GET /healthz` (not).
 

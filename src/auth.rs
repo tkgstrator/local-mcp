@@ -35,15 +35,21 @@ pub async fn guard(
         }
     }
 
-    let presented = request
+    let path = request.uri().path().to_string();
+    let Some(presented) = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(StatusCode::UNAUTHORIZED)?;
+    else {
+        // Logged rather than silently refused: a client probing without
+        // credentials looks identical to no traffic at all otherwise.
+        tracing::warn!(%path, "rejected request with no bearer token");
+        return Err(StatusCode::UNAUTHORIZED);
+    };
 
     if !token_matches(&config.token, presented.trim()) {
-        tracing::warn!("rejected request with invalid bearer token");
+        tracing::warn!(%path, "rejected request with invalid bearer token");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
