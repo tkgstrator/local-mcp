@@ -145,10 +145,17 @@ A successful response is an SSE stream whose `data:` line carries the server's
 
 ## Development
 
+A Dev Container is included. Opening the repository in it brings the Rust
+toolchain, `act`, and the GitHub CLI with it, and keeps `target/` and the cargo
+registry in named volumes so rebuilds survive container restarts.
+
 ```sh
 cargo test    # containment tests live in src/root.rs
-cargo build
+cargo clippy --all-targets -- -D warnings
 ```
+
+Commit messages follow Conventional Commits (`.commitlintrc.yaml`); CI checks
+them, so `wip` will not pass.
 
 ## License
 
