@@ -123,6 +123,68 @@ Or standalone, for a quick look:
 LOCAL_MCP_TOKEN=$(openssl rand -hex 32) LOCAL_MCP_ROOT=$PWD cargo run --release
 ```
 
+### Several repositories at once
+
+Give each repository its own sidecar on its own host port, and run a single
+`cloudflared` beside them all. A wildcard DNS record is created once; adding a
+repository after that is two lines of ingress, not a new domain.
+
+In each repository's `compose.yaml`:
+
+```yaml
+services:
+  local-mcp:
+    image: ghcr.io/tkgstrator/local-mcp:latest
+    restart: unless-stopped
+    # Match whatever owns the checkout; in a Dev Container that is usually 1000.
+    user: "1000:1000"
+    environment:
+      # Mount point below, not the /workspace default.
+      LOCAL_MCP_ROOT: /home/vscode/app
+      LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN:?openssl rand -hex 32}
+    volumes:
+      - ../../:/home/vscode/app:cached
+    ports:
+      # Bound to loopback: the tunnel is the only way in. Pick a distinct
+      # host port per repository.
+      - "127.0.0.1:8081:8080"
+```
+
+Then one tunnel for the whole machine, outside any project:
+
+```yaml
+name: mcp-tunnel
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # Host networking so the loopback ports above are reachable.
+    network_mode: host
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./config.yml:/etc/cloudflared/config.yml:ro
+      - ./credentials.json:/etc/cloudflared/credentials.json:ro
+```
+
+```yaml
+# config.yml
+tunnel: <tunnel-uuid>
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: repo-a.mcp.example.com
+    service: http://localhost:8081
+  - hostname: repo-b.mcp.example.com
+    service: http://localhost:8082
+  - service: http_status:404
+```
+
+Point `*.mcp.example.com` at `<tunnel-uuid>.cfargotunnel.com` once, and each new
+repository needs only a port, an ingress entry, and `cloudflared` reloading.
+
+Use a different `LOCAL_MCP_TOKEN` per repository. One leaked token then costs
+one checkout rather than all of them.
+
 ## Connecting ChatGPT
 
 1. Publish the container over a tunnel so it has an HTTPS URL. Do not open a
