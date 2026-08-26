@@ -42,7 +42,10 @@ pub async fn read_file(
         .unwrap_or(lines.len());
 
     if start >= lines.len() && !lines.is_empty() {
-        bail!("offset {start} is past the end of {shown} ({} lines)", lines.len());
+        bail!(
+            "offset {start} is past the end of {shown} ({} lines)",
+            lines.len()
+        );
     }
 
     let mut out = String::new();
@@ -66,12 +69,7 @@ pub async fn write_file(root: &Root, path: &str, content: &str) -> Result<String
     Ok(format!("wrote {} bytes to {shown}", content.len()))
 }
 
-pub async fn edit_file(
-    root: &Root,
-    path: &str,
-    old_text: &str,
-    new_text: &str,
-) -> Result<String> {
+pub async fn edit_file(root: &Root, path: &str, old_text: &str, new_text: &str) -> Result<String> {
     if old_text.is_empty() {
         bail!("old_text must not be empty; use write_file to create a file");
     }
