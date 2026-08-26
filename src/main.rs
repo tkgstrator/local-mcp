@@ -24,7 +24,9 @@ async fn main() -> Result<()> {
     // works for anyone who reaches for it out of habit.
     let filter = std::env::var("LOCAL_MCP_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
-        .unwrap_or_else(|_| "local_mcp=info,tower_http=info".to_string());
+        // rmcp included: the SDK refuses some requests before they reach this
+        // crate, and without its warnings those look like unexplained 403s.
+        .unwrap_or_else(|_| "local_mcp=info,tower_http=info,rmcp=warn".to_string());
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(filter))
@@ -35,11 +37,17 @@ async fn main() -> Result<()> {
     let cancel = CancellationToken::new();
 
     let service = {
+        // Read before the closure takes ownership of the Arc.
+        let allowed_hosts = config.allowed_hosts.clone();
         let config = config.clone();
         StreamableHttpService::new(
             move || Ok(LocalMcp::new(config.clone())),
             LocalSessionManager::default().into(),
-            StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
+            // The SDK allows only localhost by default, so a request arriving
+            // under a real hostname is refused before it reaches any tool.
+            StreamableHttpServerConfig::default()
+                .with_cancellation_token(cancel.child_token())
+                .with_allowed_hosts(allowed_hosts),
         )
     };
 

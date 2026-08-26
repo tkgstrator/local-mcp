@@ -71,6 +71,7 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_BIND` | `0.0.0.0:8080` | Listen address. |
 | `LOCAL_MCP_ALLOW_EXEC` | `true` | `false` removes all shell tools. |
 | `LOCAL_MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated origins. Empty disables the check; set it to restrict which browser origins may reach the server. |
+| `LOCAL_MCP_ALLOWED_HOSTS` | *(empty)* | Comma-separated hostnames accepted in the `Host` header. Empty disables the check. Set it to your own hostname to reject requests arriving under any other name. |
 | `LOCAL_MCP_MAX_OUTPUT` | `1048576` | Byte ceiling on tool output. |
 | `LOCAL_MCP_COMMAND_TIMEOUT` | `30` | Seconds before `execute` hands back a `job_id`. |
 | `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
