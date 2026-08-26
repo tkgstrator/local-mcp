@@ -100,16 +100,18 @@ exact build, and `vX.Y.Z` / `vX.Y` appear when a git tag is pushed.
 
 ### Match the uid, do not chown the volume
 
-The files in that shared volume belong to whatever user your application runs
-as. This image defaults to `10001`, which almost certainly is not it — so run
-this container as the application's user instead:
+The image runs as `1000:1000`, which is what a Dev Container checkout and most
+single-user setups are owned by, so usually there is nothing to configure.
+
+When the neighbouring container runs as something else, override it rather than
+touching the volume:
 
 ```yaml
 local-mcp:
-  user: "1000:1000"   # whatever `id -u` / `id -g` print in the app container
+  user: "1001:1001"   # whatever `id -u` / `id -g` print in the app container
 ```
 
-Give both halves. `user: "1000"` alone leaves the group as root, and everything
+Give both halves. `user: "1001"` alone leaves the group as root, and everything
 written through the connector comes out group-owned by root.
 
 Do not fix the mismatch by chowning the shared volume. Those files belong to the
@@ -136,8 +138,8 @@ services:
   local-mcp:
     image: ghcr.io/tkgstrator/local-mcp:latest
     restart: unless-stopped
-    # Match whatever owns the checkout; in a Dev Container that is usually 1000.
-    user: "1000:1000"
+    # Runs as 1000:1000 by default; add `user:` only if the checkout is owned
+    # by something else.
     environment:
       # Mount point below, not the /workspace default.
       LOCAL_MCP_ROOT: /home/vscode/app

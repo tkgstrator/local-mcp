@@ -10,11 +10,11 @@ services:
   local-mcp:
     build: .
     restart: unless-stopped
-    # Must match the uid:gid that owns the files in the shared volume, which is
-    # whatever `app` runs as — not this image's default. Give both halves: with
-    # only a uid, files come out group-owned by root. Check with:
+    # The image already runs as 1000:1000. Override only when `app` runs as
+    # something else, and give both halves — with only a uid, files come out
+    # group-owned by root. Check with:
     #   docker compose exec app id -u && docker compose exec app id -g
-    user: "${LOCAL_MCP_USER:-10001:10001}"
+    user: "${LOCAL_MCP_USER:-1000:1000}"
     environment:
       LOCAL_MCP_ROOT: /workspace
       LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN:?generate one with: openssl rand -hex 32}
