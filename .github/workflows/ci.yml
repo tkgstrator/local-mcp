@@ -43,6 +43,9 @@ jobs:
   image:
     name: docker build
     runs-on: ubuntu-latest
+    # On master the deployment workflow builds and pushes the same image, so
+    # only guard pull requests here.
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
 
