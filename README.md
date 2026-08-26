@@ -86,6 +86,18 @@ export LOCAL_MCP_USER="$(docker compose exec -T app id -u):$(docker compose exec
 docker compose up -d --build
 ```
 
+### Using the published image
+
+Pushes to `master` publish to GHCR, so you do not have to build anything:
+
+```
+ghcr.io/tkgstrator/local-mcp:latest
+```
+
+Replace `build: .` with `image: ghcr.io/tkgstrator/local-mcp:latest` in
+`compose.yaml` to use it. `latest` follows `master`, `sha-<commit>` pins one
+exact build, and `vX.Y.Z` / `vX.Y` appear when a git tag is pushed.
+
 ### Match the uid, do not chown the volume
 
 The files in that shared volume belong to whatever user your application runs
