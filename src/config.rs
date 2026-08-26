@@ -21,9 +21,8 @@ fn var(key: &str) -> Option<String> {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let root_dir = PathBuf::from(
-            var("LOCAL_MCP_ROOT").unwrap_or_else(|| "/workspace".to_string()),
-        );
+        let root_dir =
+            PathBuf::from(var("LOCAL_MCP_ROOT").unwrap_or_else(|| "/workspace".to_string()));
         let root = Root::new(&root_dir)
             .with_context(|| format!("LOCAL_MCP_ROOT is unusable: {}", root_dir.display()))?;
 
