@@ -11,6 +11,10 @@ pub struct Config {
     pub bind: SocketAddr,
     pub allowed_origins: Vec<String>,
     pub allowed_hosts: Vec<String>,
+    /// Public origin this server is reached at, e.g. `https://mcp.example.com`.
+    /// OAuth metadata has to advertise absolute URLs, so the flow is only
+    /// offered when this is known.
+    pub public_url: Option<String>,
     pub max_output: usize,
     pub command_timeout: Duration,
     pub allow_exec: bool,
@@ -64,6 +68,8 @@ impl Config {
             })
             .unwrap_or_default();
 
+        let public_url = var("LOCAL_MCP_PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string());
+
         let max_output = var("LOCAL_MCP_MAX_OUTPUT")
             .map(|v| v.parse::<usize>())
             .transpose()
@@ -90,6 +96,7 @@ impl Config {
             bind,
             allowed_origins,
             allowed_hosts,
+            public_url,
             max_output,
             command_timeout,
             allow_exec,
