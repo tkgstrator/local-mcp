@@ -4,6 +4,18 @@ on:
   push:
     branches: [master]
     tags: ["v*"]
+    # The image cannot change when only prose does, so skip the rebuild.
+    #
+    # Whether this filter also applies to tag pushes is not documented either
+    # way. If a release tag ever lands on a docs-only commit and no build
+    # starts, run this workflow from the Actions tab instead.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - ".vscode/**"
+      - ".devcontainer/**"
+      - ".editorconfig"
+      - ".gitattributes"
   workflow_dispatch:
 
 permissions:
