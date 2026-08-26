@@ -10,6 +10,7 @@ pub struct Config {
     pub token: String,
     pub bind: SocketAddr,
     pub allowed_origins: Vec<String>,
+    pub allowed_hosts: Vec<String>,
     pub max_output: usize,
     pub command_timeout: Duration,
     pub allow_exec: bool,
@@ -50,6 +51,19 @@ impl Config {
             })
             .unwrap_or_default();
 
+        // The SDK defaults this to localhost only, which refuses every request
+        // that arrives under a real hostname. Empty disables the check; the
+        // bearer token is what actually guards the endpoint.
+        let allowed_hosts = var("LOCAL_MCP_ALLOWED_HOSTS")
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let max_output = var("LOCAL_MCP_MAX_OUTPUT")
             .map(|v| v.parse::<usize>())
             .transpose()
@@ -75,6 +89,7 @@ impl Config {
             token,
             bind,
             allowed_origins,
+            allowed_hosts,
             max_output,
             command_timeout,
             allow_exec,
