@@ -13,17 +13,21 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use tokio_util::sync::CancellationToken;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{config::Config, server::LocalMcp};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // LOCAL_MCP_LOG first so the knob matches the other settings; RUST_LOG still
+    // works for anyone who reaches for it out of habit.
+    let filter = std::env::var("LOCAL_MCP_LOG")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .unwrap_or_else(|_| "local_mcp=info,tower_http=info".to_string());
+
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "local_mcp=info,tower_http=info".into()),
-        )
+        .with(tracing_subscriber::EnvFilter::new(filter))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -39,13 +43,29 @@ async fn main() -> Result<()> {
         )
     };
 
+    // `route_layer`, not `layer`: the guard must apply to matched routes only.
+    // With `layer` it also wraps the 404 fallback, so every unknown path answers
+    // 401 — including the /.well-known/* probes a client makes before it
+    // connects. A 401 there reads as "this server wants OAuth", and clients that
+    // would otherwise have sent the bearer token go looking for authorization
+    // metadata that does not exist.
     let app = Router::new()
         .merge(
             Router::new()
                 .nest_service("/mcp", service)
-                .layer(middleware::from_fn_with_state(config.clone(), auth::guard)),
+                .route_layer(middleware::from_fn_with_state(config.clone(), auth::guard)),
         )
-        .route("/healthz", get(|| async { "ok" }));
+        .route("/healthz", get(|| async { "ok" }))
+        // At INFO because the default filter has to show these: a client whose
+        // probe is being refused otherwise looks exactly like a client that
+        // never connected, and there is no other way to tell the two apart.
+        .layer(
+            TraceLayer::new_for_http()
+                // The span carries the method and path; without raising it too,
+                // the log says a request finished but not which one.
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
+        );
 
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
