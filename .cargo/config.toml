@@ -1,0 +1,12 @@
+[net]
+# Use system `git` for fetches (helps behind proxies/corporate networks).
+git-fetch-with-cli = true
+
+[registries.crates-io]
+# Sparse protocol is the default since Cargo 1.68; pinning explicitly guards
+# against downgrades and clarifies intent.
+protocol = "sparse"
+
+[term]
+verbose = false
+color = "always"
