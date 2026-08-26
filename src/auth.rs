@@ -4,11 +4,19 @@ use axum::{
     extract::{Request, State},
     http::{StatusCode, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use subtle::ConstantTimeEq;
 
-use crate::config::Config;
+use crate::{config::Config, oauth::OAuth};
+
+#[derive(Clone)]
+pub struct AuthState {
+    pub config: Arc<Config>,
+    /// Present only when a public URL is configured, since OAuth metadata has
+    /// to advertise absolute URLs.
+    pub oauth: Option<Arc<OAuth>>,
+}
 
 fn token_matches(expected: &str, presented: &str) -> bool {
     // Length is not secret; the bytes are. Comparing only equal-length inputs
@@ -25,17 +33,38 @@ fn token_matches(expected: &str, presented: &str) -> bool {
 /// default only turned away legitimate clients that do send an `Origin`, which
 /// ChatGPT turns out to be.
 pub async fn guard(
-    State(config): State<Arc<Config>>,
+    State(state): State<AuthState>,
     request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
-    if !config.allowed_origins.is_empty()
+) -> Result<Response, Response> {
+    let unauthorized = || {
+        let mut response = StatusCode::UNAUTHORIZED.into_response();
+        // RFC 9728: tells a client where to find the metadata describing how to
+        // authenticate. Without it, a client that has no token cannot discover
+        // that an OAuth flow is on offer.
+        if let Some(oauth) = &state.oauth
+            && let Ok(value) = format!(
+                r#"Bearer resource_metadata="{}""#,
+                oauth.resource_metadata_url()
+            )
+            .parse()
+        {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, value);
+        }
+        response
+    };
+
+    if !state.config.allowed_origins.is_empty()
         && let Some(origin) = request.headers().get(header::ORIGIN)
     {
-        let origin = origin.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
-        if !config.allowed_origins.iter().any(|a| a == origin) {
+        let origin = origin
+            .to_str()
+            .map_err(|_| StatusCode::FORBIDDEN.into_response())?;
+        if !state.config.allowed_origins.iter().any(|a| a == origin) {
             tracing::warn!(%origin, "rejected request with disallowed Origin");
-            return Err(StatusCode::FORBIDDEN);
+            return Err(StatusCode::FORBIDDEN.into_response());
         }
     }
 
@@ -49,12 +78,21 @@ pub async fn guard(
         // Logged rather than silently refused: a client probing without
         // credentials looks identical to no traffic at all otherwise.
         tracing::warn!(%path, "rejected request with no bearer token");
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(unauthorized());
     };
 
-    if !token_matches(&config.token, presented.trim()) {
+    let presented = presented.trim();
+    // The configured token is accepted directly so clients that can hold a
+    // secret skip the OAuth round trip entirely.
+    let accepted = token_matches(&state.config.token, presented)
+        || state
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| oauth.token_is_valid(presented));
+
+    if !accepted {
         tracing::warn!(%path, "rejected request with invalid bearer token");
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(unauthorized());
     }
 
     Ok(next.run(request).await)

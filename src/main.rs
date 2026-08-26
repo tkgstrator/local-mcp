@@ -2,13 +2,17 @@ mod auth;
 mod config;
 mod exec_ops;
 mod fs_ops;
+mod oauth;
 mod root;
 mod server;
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::{Router, middleware, routing::get};
+use axum::{
+    Router, middleware,
+    routing::{get, post},
+};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -16,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{config::Config, server::LocalMcp};
+use crate::{auth::AuthState, config::Config, oauth::OAuth, server::LocalMcp};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,19 +55,56 @@ async fn main() -> Result<()> {
         )
     };
 
+    // Offered only when the public URL is known, because the metadata below has
+    // to name absolute URLs that the client can actually reach.
+    let oauth = config
+        .public_url
+        .as_ref()
+        .map(|url| Arc::new(OAuth::new(url.clone(), config.token.clone())));
+
+    let auth_state = AuthState {
+        config: config.clone(),
+        oauth: oauth.clone(),
+    };
+
     // `route_layer`, not `layer`: the guard must apply to matched routes only.
     // With `layer` it also wraps the 404 fallback, so every unknown path answers
     // 401 — including the /.well-known/* probes a client makes before it
     // connects. A 401 there reads as "this server wants OAuth", and clients that
     // would otherwise have sent the bearer token go looking for authorization
     // metadata that does not exist.
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(
             Router::new()
                 .nest_service("/mcp", service)
-                .route_layer(middleware::from_fn_with_state(config.clone(), auth::guard)),
+                .route_layer(middleware::from_fn_with_state(auth_state, auth::guard)),
         )
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(|| async { "ok" }));
+
+    if let Some(oauth) = oauth {
+        // Unauthenticated by design: the consent screen is the gate, and the
+        // rest of the flow is worthless without getting through it.
+        app = app.merge(
+            Router::new()
+                .route(
+                    "/.well-known/oauth-protected-resource",
+                    get(oauth::protected_resource),
+                )
+                .route(
+                    "/.well-known/oauth-authorization-server",
+                    get(oauth::authorization_server),
+                )
+                .route("/register", post(oauth::register))
+                .route(
+                    "/authorize",
+                    get(oauth::authorize_form).post(oauth::authorize_submit),
+                )
+                .route("/token", post(oauth::token))
+                .with_state(oauth),
+        );
+    }
+
+    let app = app
         // At INFO because the default filter has to show these: a client whose
         // probe is being refused otherwise looks exactly like a client that
         // never connected, and there is no other way to tell the two apart.

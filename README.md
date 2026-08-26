@@ -72,6 +72,7 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_ALLOW_EXEC` | `true` | `false` removes all shell tools. |
 | `LOCAL_MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated origins. Empty disables the check; set it to restrict which browser origins may reach the server. |
 | `LOCAL_MCP_ALLOWED_HOSTS` | *(empty)* | Comma-separated hostnames accepted in the `Host` header. Empty disables the check. Set it to your own hostname to reject requests arriving under any other name. |
+| `LOCAL_MCP_PUBLIC_URL` | *(empty)* | Public origin, e.g. `https://mcp.example.com`. Setting it enables the OAuth flow below; without it only the static token is accepted. |
 | `LOCAL_MCP_MAX_OUTPUT` | `1048576` | Byte ceiling on tool output. |
 | `LOCAL_MCP_COMMAND_TIMEOUT` | `30` | Seconds before `execute` hands back a `job_id`. |
 | `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
@@ -81,6 +82,39 @@ whether the token was missing or wrong. A client that cannot connect is visible
 here — silence means the request never arrived.
 
 Endpoints: `POST /mcp` (authenticated) and `GET /healthz` (not).
+
+## OAuth
+
+Some clients will not accept a static token. ChatGPT is one: its connector form
+offers OAuth and nothing else. Setting `LOCAL_MCP_PUBLIC_URL` makes this server
+its own authorization server so those clients can connect.
+
+```
+/.well-known/oauth-protected-resource   names the authorization server
+/.well-known/oauth-authorization-server lists the endpoints
+/register                               dynamic client registration (RFC 7591)
+/authorize                              consent screen
+/token                                  authorization code -> access token
+```
+
+The consent screen asks for `LOCAL_MCP_TOKEN`. **Nothing here federates
+identity** — the shared secret still decides who gets in, and the flow only
+packages it in the shape those clients require. Enter it once in the browser and
+the client holds an access token from then on. PKCE (S256) is required, codes
+are single-use and expire in ten minutes, tokens last 30 days, and both live in
+memory — restarting the server means authorizing again.
+
+The static token keeps working, so a client that can hold a secret skips the
+round trip entirely:
+
+```sh
+claude mcp add --transport http local-mcp https://mcp.example.com/mcp \
+  --header "Authorization: Bearer $LOCAL_MCP_TOKEN"
+```
+
+To put a real identity provider in front instead, protect `/authorize` with
+something like Cloudflare Access — it is a browser page, so SSO applies — and
+leave `/mcp` and `/token` alone, since those are machine-to-machine.
 
 ## Running
 
