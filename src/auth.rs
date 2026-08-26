@@ -18,16 +18,20 @@ fn token_matches(expected: &str, presented: &str) -> bool {
 
 /// Reject requests that fail bearer auth or carry a disallowed `Origin`.
 ///
-/// Origin checking is required by the MCP spec to defeat DNS rebinding: a page
-/// in someone's browser must not be able to drive this server just because it
-/// can reach the address. Absent `Origin` means a non-browser client, which is
-/// what ChatGPT is.
+/// Origin checking defeats DNS rebinding: a page in someone's browser must not
+/// be able to drive this server just because it can reach the address. The
+/// bearer token already covers that — a browser will not attach an
+/// `Authorization` header on its own — so the check is opt-in. Enabling it by
+/// default only turned away legitimate clients that do send an `Origin`, which
+/// ChatGPT turns out to be.
 pub async fn guard(
     State(config): State<Arc<Config>>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if let Some(origin) = request.headers().get(header::ORIGIN) {
+    if !config.allowed_origins.is_empty()
+        && let Some(origin) = request.headers().get(header::ORIGIN)
+    {
         let origin = origin.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
         if !config.allowed_origins.iter().any(|a| a == origin) {
             tracing::warn!(%origin, "rejected request with disallowed Origin");
