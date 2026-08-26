@@ -1,0 +1,43 @@
+# local-mcp runs beside the container you actually care about and reaches its
+# files through a shared volume.
+services:
+  # The container whose files ChatGPT should work on. Replace with your own.
+  app:
+    image: your-app:latest
+    volumes:
+      - app-data:/srv
+
+  local-mcp:
+    build: .
+    restart: unless-stopped
+    # Must match the uid:gid that owns the files in the shared volume, which is
+    # whatever `app` runs as — not this image's default. Give both halves: with
+    # only a uid, files come out group-owned by root. Check with:
+    #   docker compose exec app id -u && docker compose exec app id -g
+    user: "${LOCAL_MCP_USER:-10001:10001}"
+    environment:
+      LOCAL_MCP_ROOT: /workspace
+      LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN:?generate one with: openssl rand -hex 32}
+      LOCAL_MCP_BIND: 0.0.0.0:8080
+      # Shell access reaches the whole container, not just the root. Set to
+      # false for a container that should only ever be read from and written to.
+      LOCAL_MCP_ALLOW_EXEC: "true"
+    volumes:
+      # The same volume app mounts, exposed here as the sandbox root.
+      - app-data:/workspace
+    # Deliberately `expose`, not `ports`: nothing should reach this container
+    # except through the tunnel below.
+    expose:
+      - "8080"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?take this from the Cloudflare Zero Trust dashboard}
+    depends_on:
+      - local-mcp
+
+volumes:
+  app-data:
