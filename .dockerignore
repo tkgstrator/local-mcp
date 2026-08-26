@@ -1,0 +1,16 @@
+.git
+.github
+.devcontainer
+.vscode
+target
+.cargo/config.toml
+!.cargo/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Dockerfile
+.dockerignore
+README.md
+CHANGELOG.md
