@@ -82,7 +82,7 @@ pub async fn edit_file(root: &Root, path: &str, old_text: &str, new_text: &str) 
     // Refuse ambiguous edits rather than guessing which occurrence was meant.
     match current.matches(old_text).count() {
         0 => bail!("old_text does not appear in {shown}"),
-        1 => {}
+        1 => {},
         n => bail!("old_text appears {n} times in {shown}; make it unique"),
     }
 

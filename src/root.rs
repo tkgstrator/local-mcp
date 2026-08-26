@@ -59,12 +59,12 @@ impl Root {
             match component {
                 Component::Prefix(prefix) => out.push(prefix.as_os_str()),
                 Component::RootDir => out.push(Component::RootDir.as_os_str()),
-                Component::CurDir => {}
+                Component::CurDir => {},
                 Component::ParentDir => {
                     if !out.pop() {
                         return Err(RootError::Escape(input.to_string()));
                     }
-                }
+                },
                 Component::Normal(part) => out.push(part),
             }
         }
