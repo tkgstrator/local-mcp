@@ -5,6 +5,7 @@ mod fs_ops;
 mod oauth;
 mod root;
 mod server;
+mod store;
 
 use std::sync::Arc;
 
@@ -60,7 +61,14 @@ async fn main() -> Result<()> {
     let oauth = config
         .public_url
         .as_ref()
-        .map(|url| Arc::new(OAuth::new(url.clone(), config.token.clone())));
+        .map(|url| OAuth::new(url.clone(), config.token.clone(), &config.state_db).map(Arc::new))
+        .transpose()
+        .with_context(|| {
+            format!(
+                "cannot open the OAuth state database at {}",
+                config.state_db.display()
+            )
+        })?;
 
     let auth_state = AuthState {
         config: config.clone(),

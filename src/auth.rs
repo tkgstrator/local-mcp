@@ -85,10 +85,15 @@ pub async fn guard(
     // The configured token is accepted directly so clients that can hold a
     // secret skip the OAuth round trip entirely.
     let accepted = token_matches(&state.config.token, presented)
-        || state
-            .oauth
-            .as_ref()
-            .is_some_and(|oauth| oauth.token_is_valid(presented));
+        || state.oauth.as_ref().is_some_and(|oauth| {
+            // A database that cannot be read denies everyone, which is the safe
+            // direction — but it is indistinguishable from a wrong token in the
+            // log unless the real reason is recorded here.
+            oauth.token_is_valid(presented).unwrap_or_else(|error| {
+                tracing::error!(%error, "cannot check the presented token");
+                false
+            })
+        });
 
     if !accepted {
         tracing::warn!(%path, "rejected request with invalid bearer token");
