@@ -106,3 +106,7 @@ $RECYCLE.BIN/
 # === local-mcp ===
 # Sandbox root used by compose when trying the server locally.
 /workspace
+
+# Read by docker compose. Holds LOCAL_MCP_TOKEN and TUNNEL_TOKEN, so it stays
+# out of the repository — the README says how to regenerate it.
+.env
