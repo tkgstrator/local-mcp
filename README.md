@@ -73,6 +73,7 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated origins. Empty disables the check; set it to restrict which browser origins may reach the server. |
 | `LOCAL_MCP_ALLOWED_HOSTS` | *(empty)* | Comma-separated hostnames accepted in the `Host` header. Empty disables the check. Set it to your own hostname to reject requests arriving under any other name. |
 | `LOCAL_MCP_PUBLIC_URL` | *(empty)* | Public origin, e.g. `https://mcp.example.com`. Setting it enables the OAuth flow below; without it only the static token is accepted. |
+| `LOCAL_MCP_STATE_DB` | `/var/lib/local-mcp/oauth.db` | SQLite file holding issued tokens and registered OAuth clients. Only read when the OAuth flow is enabled. Must sit outside `LOCAL_MCP_ROOT`, or the server refuses to start: the file tools can read anything under the root, and this file is a set of live credentials. Put a volume on its directory. |
 | `LOCAL_MCP_MAX_OUTPUT` | `1048576` | Byte ceiling on tool output. |
 | `LOCAL_MCP_COMMAND_TIMEOUT` | `30` | Seconds before `execute` hands back a `job_id`. |
 | `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
@@ -101,8 +102,13 @@ The consent screen asks for `LOCAL_MCP_TOKEN`. **Nothing here federates
 identity** — the shared secret still decides who gets in, and the flow only
 packages it in the shape those clients require. Enter it once in the browser and
 the client holds an access token from then on. PKCE (S256) is required, codes
-are single-use and expire in ten minutes, tokens last 30 days, and both live in
-memory — restarting the server means authorizing again.
+are single-use and expire in ten minutes, and tokens last 30 days.
+
+Registered clients and issued tokens are kept in the SQLite file named by
+`LOCAL_MCP_STATE_DB`, so a restart does not invalidate them. Mount a volume on
+its directory — on ephemeral storage the file goes away with the container, and
+a client holding a 30-day token then gets 401s that look like a rejected
+credential rather than a forgotten one.
 
 The static token keeps working, so a client that can hold a secret skips the
 round trip entirely:

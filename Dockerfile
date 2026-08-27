@@ -128,7 +128,10 @@ COPY --from=build /src/target/release/local-mcp /usr/local/bin/local-mcp
 # of at the /workspace the binary would otherwise default to. A compose file
 # that sets LOCAL_MCP_ROOT itself still wins over this.
 ENV LOCAL_MCP_ROOT=/home/vscode/app
-RUN install -d -o vscode -g vscode /home/vscode/app
+# Issued OAuth tokens live here, deliberately outside LOCAL_MCP_ROOT so the file
+# tools cannot read them. Mount a volume over it, or every restart forgets the
+# clients that already hold valid tokens.
+RUN install -d -o vscode -g vscode /home/vscode/app /var/lib/local-mcp
 USER vscode
 WORKDIR /home/vscode/app
 EXPOSE 8080

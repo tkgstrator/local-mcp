@@ -8,11 +8,12 @@
 //! those clients insist on.
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
 
+use anyhow::Result;
 use axum::{
     Form, Json,
     extract::{Query, State},
@@ -26,35 +27,26 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+use crate::store::{PendingCode, Store};
+
 /// Long enough to complete a consent screen, short enough that a leaked code in
 /// a proxy log is worthless by the time anyone reads it.
 const CODE_TTL: Duration = Duration::from_secs(600);
 const TOKEN_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
-struct PendingCode {
-    client_id: String,
-    redirect_uri: String,
-    code_challenge: String,
-    expires_at: Instant,
-}
-
 pub struct OAuth {
     issuer: String,
     consent_secret: String,
-    clients: Mutex<HashMap<String, Vec<String>>>,
-    codes: Mutex<HashMap<String, PendingCode>>,
-    tokens: Mutex<HashMap<String, Instant>>,
+    store: Store,
 }
 
 impl OAuth {
-    pub fn new(issuer: String, consent_secret: String) -> Self {
-        Self {
+    pub fn new(issuer: String, consent_secret: String, database: &Path) -> Result<Self> {
+        Ok(Self {
             issuer,
             consent_secret,
-            clients: Mutex::new(HashMap::new()),
-            codes: Mutex::new(HashMap::new()),
-            tokens: Mutex::new(HashMap::new()),
-        }
+            store: Store::open(database)?,
+        })
     }
 
     /// Where a client should look for the metadata that describes this flow.
@@ -63,12 +55,8 @@ impl OAuth {
         format!("{}/.well-known/oauth-protected-resource", self.issuer)
     }
 
-    pub fn token_is_valid(&self, presented: &str) -> bool {
-        let Ok(mut tokens) = self.tokens.lock() else {
-            return false;
-        };
-        tokens.retain(|_, expires_at| *expires_at > Instant::now());
-        tokens.contains_key(presented)
+    pub fn token_is_valid(&self, presented: &str) -> Result<bool> {
+        self.store.token_is_valid(presented)
     }
 }
 
@@ -128,16 +116,16 @@ pub async fn register(
 
     let client_id = Uuid::new_v4().to_string();
     oauth
-        .clients
-        .lock()
-        .map_err(|_| {
+        .store
+        .register_client(&client_id, &redirect_uris)
+        .map_err(|error| {
+            tracing::error!(%error, "cannot record the registered client");
             oauth_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
-                "client table is poisoned",
+                "cannot record the registered client",
             )
-        })?
-        .insert(client_id.clone(), redirect_uris.clone());
+        })?;
 
     tracing::info!(%client_id, "registered an OAuth client");
     Ok(Json(json!({
@@ -214,24 +202,24 @@ pub async fn authorize_submit(
 
     let code = Uuid::new_v4().to_string();
     oauth
-        .codes
-        .lock()
-        .map_err(|_| {
-            oauth_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                "code table is poisoned",
-            )
-        })?
-        .insert(
-            code.clone(),
-            PendingCode {
+        .store
+        .store_code(
+            &code,
+            &PendingCode {
                 client_id: form.client_id.clone(),
                 redirect_uri: form.redirect_uri.clone(),
                 code_challenge: form.code_challenge,
-                expires_at: Instant::now() + CODE_TTL,
+                expires_at: SystemTime::now() + CODE_TTL,
             },
-        );
+        )
+        .map_err(|error| {
+            tracing::error!(%error, "cannot record the authorization code");
+            oauth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "cannot record the authorization code",
+            )
+        })?;
 
     let separator = if form.redirect_uri.contains('?') {
         '&'
@@ -276,17 +264,17 @@ pub async fn token(
     }
 
     let pending = oauth
-        .codes
-        .lock()
-        .map_err(|_| {
+        .store
+        // Removed on first use: an authorization code is single-use.
+        .take_code(&request.code)
+        .map_err(|error| {
+            tracing::error!(%error, "cannot read the authorization code");
             oauth_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
-                "code table is poisoned",
+                "cannot read the authorization code",
             )
         })?
-        // Removed on first use: an authorization code is single-use.
-        .remove(&request.code)
         .ok_or_else(|| {
             oauth_error(
                 StatusCode::BAD_REQUEST,
@@ -295,7 +283,7 @@ pub async fn token(
             )
         })?;
 
-    if pending.expires_at < Instant::now() {
+    if pending.expires_at < SystemTime::now() {
         return Err(oauth_error(
             StatusCode::BAD_REQUEST,
             "invalid_grant",
@@ -322,16 +310,16 @@ pub async fn token(
 
     let access_token = Uuid::new_v4().simple().to_string();
     oauth
-        .tokens
-        .lock()
-        .map_err(|_| {
+        .store
+        .store_token(&access_token, SystemTime::now() + TOKEN_TTL)
+        .map_err(|error| {
+            tracing::error!(%error, "cannot record the issued token");
             oauth_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
-                "token table is poisoned",
+                "cannot record the issued token",
             )
-        })?
-        .insert(access_token.clone(), Instant::now() + TOKEN_TTL);
+        })?;
 
     tracing::info!(client_id = %pending.client_id, "issued an access token");
     Ok(Json(json!({
@@ -343,17 +331,18 @@ pub async fn token(
 }
 
 fn validate_client(oauth: &OAuth, client_id: &str, redirect_uri: &str) -> Result<(), Response> {
-    let clients = oauth.clients.lock().map_err(|_| {
+    let registered = oauth.store.redirect_uris(client_id).map_err(|error| {
+        tracing::error!(%error, "cannot read the registered clients");
         oauth_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
-            "client table is poisoned",
+            "cannot read the registered clients",
         )
     })?;
 
     // An unregistered redirect_uri is how a stolen code gets delivered
     // somewhere else, so this is checked before anything is issued.
-    match clients.get(client_id) {
+    match registered {
         Some(uris) if uris.iter().any(|u| u == redirect_uri) => Ok(()),
         Some(_) => Err(oauth_error(
             StatusCode::BAD_REQUEST,
