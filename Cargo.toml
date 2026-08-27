@@ -45,3 +45,10 @@ base64 = "0.23.1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.clippy]
+# axum's own Response is 128 bytes, which is the threshold result_large_err
+# fires at, so every handler returning Result<_, Response> trips it. Boxing the
+# error would stop those handlers returning something axum can turn back into a
+# response, so the lint is off rather than worked around.
+result_large_err = "allow"
