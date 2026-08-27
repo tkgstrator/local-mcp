@@ -1,5 +1,5 @@
 {
-  "name": "Rust",
+  "name": "Local MCP Server",
   "dockerComposeFile": [
     "compose.yaml"
   ],

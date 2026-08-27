@@ -25,6 +25,10 @@ services:
     volumes:
       # The same volume app mounts, exposed here as the sandbox root.
       - app-data:/workspace
+      # Issued tokens and registered OAuth clients. Without this, a restart
+      # invalidates every token already handed out and connected clients start
+      # answering 401 with no way to tell why.
+      - local-mcp-state:/var/lib/local-mcp
     # Deliberately `expose`, not `ports`: nothing should reach this container
     # except through the tunnel below.
     expose:
@@ -41,3 +45,4 @@ services:
 
 volumes:
   app-data:
+  local-mcp-state:

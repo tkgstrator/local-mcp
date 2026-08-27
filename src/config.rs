@@ -15,6 +15,10 @@ pub struct Config {
     /// OAuth metadata has to advertise absolute URLs, so the flow is only
     /// offered when this is known.
     pub public_url: Option<String>,
+    /// Where issued tokens and registered clients are kept between restarts.
+    /// Deliberately outside `root`: the file tools can read anything under
+    /// that, and this file is a set of live credentials.
+    pub state_db: PathBuf,
     pub max_output: usize,
     pub command_timeout: Duration,
     pub allow_exec: bool,
@@ -70,6 +74,17 @@ impl Config {
 
         let public_url = var("LOCAL_MCP_PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string());
 
+        let state_db = PathBuf::from(
+            var("LOCAL_MCP_STATE_DB").unwrap_or_else(|| "/var/lib/local-mcp/oauth.db".to_string()),
+        );
+        if state_db.starts_with(root.path()) {
+            bail!(
+                "LOCAL_MCP_STATE_DB ({}) is inside LOCAL_MCP_ROOT, which would expose issued \
+                 tokens to the file tools",
+                state_db.display()
+            );
+        }
+
         let max_output = var("LOCAL_MCP_MAX_OUTPUT")
             .map(|v| v.parse::<usize>())
             .transpose()
@@ -97,6 +112,7 @@ impl Config {
             allowed_origins,
             allowed_hosts,
             public_url,
+            state_db,
             max_output,
             command_timeout,
             allow_exec,
