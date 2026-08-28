@@ -1,48 +1,59 @@
-# local-mcp runs beside the container you actually care about and reaches its
-# files through a shared volume.
+# local-mcp mounts the repository it sits in and publishes it through a tunnel.
+# No ports are opened: cloudflared reaches local-mcp over the compose network.
 services:
-  # The container whose files ChatGPT should work on. Replace with your own.
-  app:
-    image: your-app:latest
-    volumes:
-      - app-data:/srv
-
   local-mcp:
-    build: .
+    image: ghcr.io/tkgstrator/local-mcp:latest
     restart: unless-stopped
-    # The image already runs as 1000:1000. Override only when `app` runs as
-    # something else, and give both halves — with only a uid, files come out
-    # group-owned by root. Check with:
-    #   docker compose exec app id -u && docker compose exec app id -g
-    user: "${LOCAL_MCP_USER:-1000:1000}"
     environment:
-      LOCAL_MCP_ROOT: /workspace
-      LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN:?generate one with: openssl rand -hex 32}
-      LOCAL_MCP_BIND: 0.0.0.0:8080
+      # Only LOCAL_MCP_* is read by the server. If the commands run through
+      # `execute` need anything — API tokens, proxy settings, whatever the tools
+      # in this container expect — add it to this block too.
+
+      # The hostname this is reached under. The SDK allows only localhost
+      # otherwise, and every request arriving under a real name is refused.
+      LOCAL_MCP_ALLOWED_HOSTS: mcp.qleap.jp
       # Shell access reaches the whole container, not just the root. Set to
       # false for a container that should only ever be read from and written to.
-      LOCAL_MCP_ALLOW_EXEC: "true"
+      LOCAL_MCP_ALLOW_EXEC: true
+      # Setting this turns on the OAuth flow, which is the only way ChatGPT
+      # will connect. Must match the hostname above.
+      LOCAL_MCP_PUBLIC_URL: https://mcp.qleap.jp
+      # Matches the mount below. The image already defaults to this, so it is
+      # written out to be moved together with the mount, not because it is
+      # required.
+      LOCAL_MCP_ROOT: /home/vscode/app
+      # At least 16 characters. The server refuses to start without it, and the
+      # OAuth consent screen asks for this exact value.
+      LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN}
+    # Only for the Docker socket below. The socket is owned by a different group
+    # on every machine, so read the number into .env rather than hardcoding it:
+    #   echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
+    # Without the right group the mount is there but every docker command comes
+    # back with a permission error on the socket.
+    group_add:
+      - "${DOCKER_GID}"
     volumes:
-      # The same volume app mounts, exposed here as the sandbox root.
-      - app-data:/workspace
+      - ./:/home/vscode/app:cached
+      # Lets commands run through `execute` drive containers. Drop this and the
+      # group_add above together if they have no business doing that — between
+      # them they are enough to start a container mounting anything on the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Read-only, so git and gh work inside the container as you. Also optional,
+      # and also your credentials: ~/.ssh is the key itself.
+      - ~/.config/gh:/home/vscode/.config/gh:cached,readonly
+      - ~/.gitconfig:/home/vscode/.gitconfig:cached,readonly
+      - ~/.ssh:/home/vscode/.ssh:cached,readonly
       # Issued tokens and registered OAuth clients. Without this, a restart
       # invalidates every token already handed out and connected clients start
       # answering 401 with no way to tell why.
       - local-mcp-state:/var/lib/local-mcp
-    # Deliberately `expose`, not `ports`: nothing should reach this container
-    # except through the tunnel below.
-    expose:
-      - "8080"
 
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?take this from the Cloudflare Zero Trust dashboard}
-    depends_on:
-      - local-mcp
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
 
 volumes:
-  app-data:
   local-mcp-state:

@@ -131,7 +131,6 @@ async fn main() -> Result<()> {
     tracing::info!(
         root = %config.root.path().display(),
         bind = %config.bind,
-        origins = config.allowed_origins.len(),
         "local-mcp listening on /mcp"
     );
 
