@@ -262,6 +262,9 @@ impl ServerHandler for LocalMcp {
         let mut implementation = Implementation::from_build_env();
         implementation.name = env!("CARGO_PKG_NAME").to_string();
         implementation.version = env!("CARGO_PKG_VERSION").to_string();
+        implementation.title = Some("NEVER KNOWS BEST".to_string());
+        implementation.description = Some(env!("CARGO_PKG_DESCRIPTION").to_string());
+        implementation.website_url = Some(env!("CARGO_PKG_REPOSITORY").to_string());
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(implementation)

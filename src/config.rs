@@ -9,7 +9,6 @@ pub struct Config {
     pub root: Root,
     pub token: String,
     pub bind: SocketAddr,
-    pub allowed_origins: Vec<String>,
     pub allowed_hosts: Vec<String>,
     /// Public origin this server is reached at, e.g. `https://mcp.example.com`.
     /// OAuth metadata has to advertise absolute URLs, so the flow is only
@@ -48,16 +47,6 @@ impl Config {
             .unwrap_or_else(|| "0.0.0.0:8080".to_string())
             .parse()
             .context("LOCAL_MCP_BIND must be an address like 0.0.0.0:8080")?;
-
-        let allowed_origins = var("LOCAL_MCP_ALLOWED_ORIGINS")
-            .map(|v| {
-                v.split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
 
         // The SDK defaults this to localhost only, which refuses every request
         // that arrives under a real hostname. Empty disables the check; the
@@ -109,7 +98,6 @@ impl Config {
             root,
             token,
             bind,
-            allowed_origins,
             allowed_hosts,
             public_url,
             state_db,

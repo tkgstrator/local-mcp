@@ -24,13 +24,12 @@ fn token_matches(expected: &str, presented: &str) -> bool {
     expected.len() == presented.len() && expected.as_bytes().ct_eq(presented.as_bytes()).into()
 }
 
-/// Reject requests that fail bearer auth or carry a disallowed `Origin`.
+/// Reject requests that fail bearer auth.
 ///
-/// Origin checking defeats DNS rebinding: a page in someone's browser must not
-/// be able to drive this server just because it can reach the address. The
-/// bearer token already covers that — a browser will not attach an
-/// `Authorization` header on its own — so the check is opt-in. Enabling it by
-/// default only turned away legitimate clients that do send an `Origin`, which
+/// There is deliberately no `Origin` check. It would only defend against a page
+/// in someone's browser driving this server, which the bearer token already
+/// prevents — a browser does not attach an `Authorization` header on its own.
+/// Enforcing it turned away legitimate clients that do send an `Origin`, which
 /// ChatGPT turns out to be.
 pub async fn guard(
     State(state): State<AuthState>,
@@ -55,18 +54,6 @@ pub async fn guard(
         }
         response
     };
-
-    if !state.config.allowed_origins.is_empty()
-        && let Some(origin) = request.headers().get(header::ORIGIN)
-    {
-        let origin = origin
-            .to_str()
-            .map_err(|_| StatusCode::FORBIDDEN.into_response())?;
-        if !state.config.allowed_origins.iter().any(|a| a == origin) {
-            tracing::warn!(%origin, "rejected request with disallowed Origin");
-            return Err(StatusCode::FORBIDDEN.into_response());
-        }
-    }
 
     let path = request.uri().path().to_string();
     let Some(presented) = request
