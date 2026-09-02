@@ -68,7 +68,7 @@ fn secret_matches(expected: &str, presented: &str) -> bool {
 /// process.
 pub async fn protected_resource(State(oauth): State<Arc<OAuth>>) -> Json<Value> {
     Json(json!({
-        "resource": format!("{}/mcp", oauth.issuer),
+        "resource": format!("{}{}", oauth.issuer, crate::MOUNT_PATH),
         "authorization_servers": [oauth.issuer],
         "bearer_methods_supported": ["header"],
     }))
