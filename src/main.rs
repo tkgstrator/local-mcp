@@ -23,6 +23,15 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{auth::AuthState, config::Config, oauth::OAuth, server::LocalMcp};
 
+/// Path the MCP endpoint is mounted at.
+///
+/// Named after the server rather than after the protocol: a host that fronts
+/// several MCP servers tells them apart by path (`/local`, `/suumo`, ...), and
+/// letting one of them squat on the generic `/mcp` leaves the others looking
+/// like the odd ones out. `oauth::protected_resource` names the same path, so
+/// keep them together by referring to this constant.
+pub const MOUNT_PATH: &str = "/local";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // LOCAL_MCP_LOG first so the knob matches the other settings; RUST_LOG still
@@ -84,7 +93,7 @@ async fn main() -> Result<()> {
     let mut app = Router::new()
         .merge(
             Router::new()
-                .nest_service("/mcp", service)
+                .nest_service(MOUNT_PATH, service)
                 .route_layer(middleware::from_fn_with_state(auth_state, auth::guard)),
         )
         .route("/healthz", get(|| async { "ok" }));
@@ -131,7 +140,8 @@ async fn main() -> Result<()> {
     tracing::info!(
         root = %config.root.path().display(),
         bind = %config.bind,
-        "local-mcp listening on /mcp"
+        path = MOUNT_PATH,
+        "local-mcp listening"
     );
 
     axum::serve(listener, app)
