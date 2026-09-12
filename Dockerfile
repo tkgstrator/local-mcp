@@ -31,6 +31,7 @@ FROM ghcr.io/astral-sh/uv:0.12.6 AS uv
 FROM oven/bun:1.4.0-slim AS bun
 FROM node:24.19.0-bookworm-slim AS node
 FROM rust:slim-bookworm AS rust
+FROM tailscale/tailscale:v1.102.3 AS tailscale
 
 # The Dev Container base rather than debian:slim, because LOCAL_MCP_ALLOW_EXEC
 # makes this somewhere people work rather than somewhere a binary merely runs.
@@ -83,6 +84,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # uv ships as two static binaries, so it needs nothing else alongside it.
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/
+# The client only, not tailscaled. The daemon belongs to the host for the same
+# reason the Docker daemon does: it wants root, NET_ADMIN and /dev/net/tun, and
+# this image ends on USER vscode with the server as PID 1. So the CLI talks to
+# somebody else's tailscaled over the socket compose.yaml mounts, and the
+# container reaches the tailnet the way it reaches anything else — routed by the
+# host. The upstream image is Alpine-built, but the binary is static and runs on
+# glibc unchanged. Keep the tag level with the host's tailscaled so the two
+# agree on protocol behaviour — but expect a version-skew warning on every
+# command anyway: upstream's image and the host's distro package are different
+# builds of the same release (1.102.3-t53a0d659a against 1.102.3-t9329c3677),
+# and the CLI compares the whole string. It is cosmetic, and it goes to stderr.
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/
 # node keeps npm as a package under lib rather than as a real binary, and the
 # wrappers in bin are relative symlinks into it, so both halves have to travel.
 COPY --from=node /usr/local/bin/node /usr/local/bin/
