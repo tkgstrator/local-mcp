@@ -84,7 +84,7 @@ Every request is logged with its method, path and status, and refusals say
 whether the token was missing or wrong. A client that cannot connect is visible
 here — silence means the request never arrived.
 
-Endpoints: `POST /mcp` (authenticated) and `GET /healthz` (not).
+Endpoints: `POST /local` (authenticated) and `GET /healthz` (not).
 
 ## OAuth
 
@@ -116,12 +116,12 @@ The static token keeps working, so a client that can hold a secret skips the
 round trip entirely:
 
 ```sh
-claude mcp add --transport http local-mcp https://mcp.example.com/mcp \
+claude mcp add --transport http local-mcp https://mcp.example.com/local \
   --header "Authorization: Bearer $LOCAL_MCP_TOKEN"
 ```
 
 To put a real identity provider in front instead, protect `/authorize` with
-Cloudflare Access — it is a browser page, so SSO applies — and leave `/mcp` and
+Cloudflare Access — it is a browser page, so SSO applies — and leave `/local` and
 `/token` alone, since those are machine-to-machine.
 
 ## Running
@@ -484,7 +484,7 @@ only the hostname and the token have to differ.
 2. Set `LOCAL_MCP_PUBLIC_URL` to that URL. ChatGPT offers OAuth and nothing else
    whichever way you add the server, so without it there is no way to hand the
    token over.
-3. In ChatGPT, add a custom connector pointing at `https://<your-host>/mcp`.
+3. In ChatGPT, add a custom connector pointing at `https://<your-host>/local`.
 4. The consent screen asks for `LOCAL_MCP_TOKEN`. Enter it once; the connector
    holds an access token from then on.
 
@@ -500,7 +500,7 @@ and fill in two things that matter:
 | Field | What to put |
 | --- | --- |
 | **Connection** | `Server URL`, not `Tunnel`. |
-| **MCP Server URL** | The tunnel's hostname with `/mcp` on the end: `https://<your-host>/mcp`. |
+| **MCP Server URL** | The tunnel's hostname with `/local` on the end: `https://<your-host>/local`. |
 | **Authentication** | `OAuth`. |
 
 `Server URL` versus `Tunnel` is the one place this gets genuinely confusing,
@@ -510,7 +510,7 @@ ChatGPT is concerned this is just a server on the internet, so it connects by
 URL like any other.
 
 The URL field is prefilled with a placeholder ending in `/sse`. That is a
-different transport; this server answers on `/mcp` and nothing is listening at
+different transport; this server answers on `/local` and nothing is listening at
 `/sse`.
 
 **Advanced OAuth settings** is worth opening once, because it says it will
@@ -533,7 +533,7 @@ through is reasonable.
 ### Verify by hand first
 
 ```sh
-curl -sS https://<your-host>/mcp \
+curl -sS https://<your-host>/local \
   -H "Authorization: Bearer $LOCAL_MCP_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
