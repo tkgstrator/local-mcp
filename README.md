@@ -84,7 +84,7 @@ Every request is logged with its method, path and status, and refusals say
 whether the token was missing or wrong. A client that cannot connect is visible
 here — silence means the request never arrived.
 
-Endpoints: `POST /mcp` (authenticated) and `GET /healthz` (not).
+Endpoints: `POST /local` (authenticated) and `GET /healthz` (not).
 
 ## OAuth
 
@@ -116,12 +116,12 @@ The static token keeps working, so a client that can hold a secret skips the
 round trip entirely:
 
 ```sh
-claude mcp add --transport http local-mcp https://mcp.example.com/mcp \
+claude mcp add --transport http local-mcp https://mcp.example.com/local \
   --header "Authorization: Bearer $LOCAL_MCP_TOKEN"
 ```
 
 To put a real identity provider in front instead, protect `/authorize` with
-Cloudflare Access — it is a browser page, so SSO applies — and leave `/mcp` and
+Cloudflare Access — it is a browser page, so SSO applies — and leave `/local` and
 `/token` alone, since those are machine-to-machine.
 
 ## Running
@@ -143,14 +143,18 @@ services:
       LOCAL_MCP_PUBLIC_URL: https://mcp.example.com
       LOCAL_MCP_ROOT: /home/vscode/app
       LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN}
+    dns:
+      - 100.100.100.100
+      - 1.1.1.1
     group_add:
       - "${DOCKER_GID}"
     volumes:
       - ./:/home/vscode/app:cached
       - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.config/gh:/home/vscode/.config/gh:cached,readonly
-      - ~/.gitconfig:/home/vscode/.gitconfig:cached,readonly
-      - ~/.ssh:/home/vscode/.ssh:cached,readonly
+      - ~/.config/gh:/home/vscode/.config/gh:cached,ro
+      - ~/.gitconfig:/home/vscode/.gitconfig:cached,ro
+      - ~/.ssh:/home/vscode/.ssh:cached,ro
+      - /run/tailscale/tailscaled.sock:/run/tailscale/tailscaled.sock:ro
       - local-mcp-state:/var/lib/local-mcp
 
   cloudflared:
@@ -218,12 +222,26 @@ The volumes divide the same way:
 | `local-mcp-state:/var/lib/local-mcp` | Issued OAuth tokens and registered clients. Without it a restart invalidates every token already handed out. |
 | `/var/run/docker.sock` | Lets commands run through `execute` drive containers. Needs `group_add` below. |
 | `~/.config/gh`, `~/.gitconfig`, `~/.ssh` | Read-only, so `git` and `gh` work inside the container as you. |
+| `/run/tailscale/tailscaled.sock` | Lets the `tailscale` CLI query the host's daemon. Not needed to *reach* tailnet addresses — only to ask about them. |
 
-The bottom two rows are conveniences, not requirements — the server runs with
-only the checkout and the state volume. Weigh them honestly: the Docker socket is
-enough to start a container that mounts anything on the host, and `~/.ssh` is
-your key. Both are handing a shell your credentials, which is the whole point and
-also the whole risk.
+Everything below the state volume is a convenience, not a requirement — the
+server runs with only the checkout and the state volume. Weigh them honestly:
+the Docker socket is enough to start a container that mounts anything on the
+host, `~/.ssh` is your key, the agent socket signs with keys you never copied in,
+and `tailscaled.sock` is mode 0666, so read-only on the mount does not stop
+`tailscale` from reconfiguring the host's tailnet identity. All of them are
+handing a shell your credentials, which is the whole point and also the whole
+risk.
+
+**Write `ro`, not `readonly`.** Compose's short syntax recognises only `ro`, and
+it discards `readonly` silently — no warning, no error, and the mount comes up
+read-write looking exactly as though the flag had taken. The four read-only
+mounts above are the ones where that matters, since three of them are your
+credentials. It is worth confirming rather than assuming:
+
+```sh
+docker compose config | grep -c read_only   # expect one per :ro mount
+```
 
 **`group_add` and the Docker socket are one decision, not two.** Mounting the
 socket is what lets `execute` drive containers, and `DOCKER_GID` is what makes
@@ -243,6 +261,120 @@ that is `TUNNEL_TOKEN`.
 Nothing is published to the host, so the tunnel is the only way in. That is what
 makes the bearer token the whole boundary rather than a second lock behind a
 firewall.
+
+### Reaching other machines
+
+The tunnel is how requests get in. This is the other direction: `execute` running
+a command on a machine that is not this one. The case that motivates it is a
+toolchain that cannot be installed here — an iOS build needs Xcode, Xcode needs
+macOS, and no amount of Dockerfile fixes that. So the container does not build
+it; it asks a Mac to.
+
+**The container is already on the tailnet, by way of the host.** Tailscale runs
+on the host, the container's default route is the host, and the host routes
+`100.64.0.0/10` like anything else. Nothing in the image is required for this —
+a stock container can open a connection to a tailnet address on the first try.
+What the `dns` block adds is only the *names*: MagicDNS lives at
+`100.100.100.100`, and without pointing at it a tailnet hostname is an NXDOMAIN
+while its address works fine.
+
+What the tailnet sees is the host, not the container, because the host is the
+node. If your ACLs need to tell the two apart, that is the case for giving the
+container its own `tailscaled` — and then it wants root, `NET_ADMIN` and
+`/dev/net/tun`, which this image is built not to need.
+
+**Use ordinary `ssh`, not `tailscale ssh`, to reach a Mac.** The Tailscale SSH
+*server* runs on Linux and on exactly one macOS variant: the App Store and
+standalone apps are sandboxed and cannot serve it, and only the open source
+`tailscaled` — the Homebrew *formula*, not the cask — can. Switching costs the
+GUI, the menu bar, exit-node *use*, Taildrop and auto-updates, which is a lot to
+pay for not putting one line in `authorized_keys`. (It is the right trade for a
+headless Mac, where there is no menu bar to click "allow" in.) Otherwise turn on
+*System Settings → General → Sharing → Remote Login* and connect over the
+tailnet address like any other host.
+
+`tailscale ssh` stays the right tool for the Linux machines, where it needs no
+key at all: the host keys arrive through the coordination server instead of
+`known_hosts`, so there is no first-connection prompt to answer. Two things to
+know before calling it from in here:
+
+- **It does not read `~/.ssh/config`** — `User` included. The account comes from
+  `[user@]host`, and otherwise defaults to the local username, which inside this
+  container is `vscode`. The tailnet policy then refuses an account nobody has.
+  Spell it out: `tailscale ssh you@some-linux-box`.
+- A machine not running the server publishes no host keys, and `tailscale ssh`
+  verifies against those and nothing else. It fails with `No ED25519 host key is
+  known … and you have requested strict checking` even where plain `ssh`
+  connects fine. That is a missing server, not a `known_hosts` problem.
+
+**The key comes from the mounted `~/.ssh`.** `compose.yaml` already mounts it
+read-only, which is enough: `ssh` reads the private key and authenticates with
+it, and only wants to write in order to add a host to `known_hosts` or open a
+`ControlMaster` socket — it warns past both. So the one-time setup is just a key
+that host will accept:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -C local-mcp   # if you have none
+ssh-copy-id <host>                                        # asks for a password once
+```
+
+Read-only is about the host's copy, not the container's reach: the key is
+readable inside, so a shell there can copy it out and use it later from
+somewhere else. That is the same bargain as the Docker socket, and the reason
+this is a key you are willing to hand out rather than your only one.
+
+**`known_hosts` has to be populated before the container needs it.** This is
+where read-only actually costs something. `ssh` cannot append inside the
+container, so a host it has never seen fails outright — `Host key verification
+failed`, with no prompt to accept, because there is nowhere to write the answer.
+It bites on names rather than machines: connect by MagicDNS name and the entry
+under the tailnet address does not count, so a host you reach daily from the host
+shell can still be unknown inside. Do the first connection on the host, where the
+file is writable, and the container inherits it. A `~/.ssh/config` entry with an
+explicit `HostName` sidesteps it too, since then the name the container verifies
+is the address already on file.
+
+Then two checks that look alike and are not:
+
+```sh
+ssh-add -l                           # an agent, if you use one. Says nothing about keys on disk
+ssh -o ControlPath=none <host> true   # can it actually authenticate?
+```
+
+The second is the one worth running. If `~/.ssh/config` sets
+`ControlMaster`/`ControlPersist` — and a mounted `~/.ssh` means the container's
+`ControlPath` resolves to the same socket path the host's does — then `ssh` will
+quietly ride a multiplexed connection some earlier interactive session opened.
+Everything works until that master times out, and then it stops with nothing
+having changed. `ControlPath=none` forces a real handshake, and a password
+prompt there means the key is not installed no matter how well the plain command
+behaves.
+
+That is a debugging tip and a reach statement at the same time, and the second
+reading is the one people miss. A socket is connected to, not written to, so
+`ro` buys nothing here: the container can ride any master the host is holding
+open — to a machine it has no key for and could not authenticate to on its own.
+A jump host counts, and so does everything sitting behind it. Keep the sockets
+out of the mount if that matters:
+
+```sshconfig
+  ControlPath /run/user/1000/ssh-cm/%r@%h-%p
+```
+
+They belong in a runtime directory rather than in `~/.ssh` regardless, and the
+container has no path to that one.
+
+With that in place the remote toolchain is just a command:
+
+```
+execute: ssh mac-mini 'cd ~/src/app && xcodebuild -scheme App -destination "generic/platform=iOS" build'
+```
+
+The checkout is on this side and Xcode is on that side, so anything beyond a
+one-liner means getting the source over too — `rsync` over the same connection,
+or a `git push` the Mac pulls from. `LOCAL_MCP_ROOT` confines the *file* tools to
+the checkout and has no say in where `ssh` goes, which is the same trade the
+Docker socket makes: the container is the boundary, not the root path.
 
 ### Using the published image
 
@@ -269,13 +401,17 @@ with the tools you would expect to find in a terminal:
 | **Search** | `ripgrep`, `fd`, `jq`. |
 | **Git** | `git`, `gh`, `git-filter-repo`. |
 | **Containers** | `docker` with the `buildx` and `compose` plugins. |
+| **Networking** | The `tailscale` CLI — the client only, talking to the host's daemon. |
 | **Agents** | Claude Code, from its own installer rather than npm, so it is the native build that can update itself. |
 | **Building** | `gcc`, `g++` and `make` by way of `build-essential`, plus `shellcheck`. |
 | **From the base** | `curl`, `jq`, `less`, `unzip`, `xz`, `openssh-client`, `procps`, `ca-certificates` and a working `zsh`. |
 
 Only the Docker *client* is installed. The daemon is expected to be somebody
 else's, reached through the socket `compose.yaml` mounts — which is why that
-mount and `group_add` decide whether any of it works.
+mount and `group_add` decide whether any of it works. `tailscale` is in the image
+for the same reason and on the same terms: the client, not `tailscaled`, because
+the daemon wants root, `NET_ADMIN` and `/dev/net/tun` while this image ends on
+`USER vscode` with the server as PID 1.
 
 The tool versions are pinned, so rebuilding an old commit gets the same
 toolchain rather than whatever the tags point at today. Rust is the exception,
@@ -484,7 +620,7 @@ only the hostname and the token have to differ.
 2. Set `LOCAL_MCP_PUBLIC_URL` to that URL. ChatGPT offers OAuth and nothing else
    whichever way you add the server, so without it there is no way to hand the
    token over.
-3. In ChatGPT, add a custom connector pointing at `https://<your-host>/mcp`.
+3. In ChatGPT, add a custom connector pointing at `https://<your-host>/local`.
 4. The consent screen asks for `LOCAL_MCP_TOKEN`. Enter it once; the connector
    holds an access token from then on.
 
@@ -500,7 +636,7 @@ and fill in two things that matter:
 | Field | What to put |
 | --- | --- |
 | **Connection** | `Server URL`, not `Tunnel`. |
-| **MCP Server URL** | The tunnel's hostname with `/mcp` on the end: `https://<your-host>/mcp`. |
+| **MCP Server URL** | The tunnel's hostname with `/local` on the end: `https://<your-host>/local`. |
 | **Authentication** | `OAuth`. |
 
 `Server URL` versus `Tunnel` is the one place this gets genuinely confusing,
@@ -510,7 +646,7 @@ ChatGPT is concerned this is just a server on the internet, so it connects by
 URL like any other.
 
 The URL field is prefilled with a placeholder ending in `/sse`. That is a
-different transport; this server answers on `/mcp` and nothing is listening at
+different transport; this server answers on `/local` and nothing is listening at
 `/sse`.
 
 **Advanced OAuth settings** is worth opening once, because it says it will
@@ -533,7 +669,7 @@ through is reasonable.
 ### Verify by hand first
 
 ```sh
-curl -sS https://<your-host>/mcp \
+curl -sS https://<your-host>/local \
   -H "Authorization: Bearer $LOCAL_MCP_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
