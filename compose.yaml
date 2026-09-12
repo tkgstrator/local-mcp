@@ -25,6 +25,17 @@ services:
       # At least 16 characters. The server refuses to start without it, and the
       # OAuth consent screen asks for this exact value.
       LOCAL_MCP_TOKEN: ${LOCAL_MCP_TOKEN}
+    # MagicDNS first, a public resolver behind it. The tailnet resolver answers
+    # for tailnet names and, unless the tailnet has global nameservers
+    # configured, SERVFAILs everything else — which falls through to the second
+    # entry. (An NXDOMAIN would not: the resolver treats that as a real answer
+    # and stops.) Drop the fallback and the container resolves other tailnet
+    # machines but not github.com; drop the whole block and it is the other way
+    # round. The search domain comes from the host's resolv.conf on its own, so
+    # short names work without naming the tailnet here.
+    dns:
+      - 100.100.100.100
+      - 1.1.1.1
     # Only for the Docker socket below. The socket is owned by a different group
     # on every machine, so read the number into .env rather than hardcoding it:
     #   echo "DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)" >> .env
@@ -39,10 +50,27 @@ services:
       # them they are enough to start a container mounting anything on the host.
       - /var/run/docker.sock:/var/run/docker.sock
       # Read-only, so git and gh work inside the container as you. Also optional,
-      # and also your credentials: ~/.ssh is the key itself.
-      - ~/.config/gh:/home/vscode/.config/gh:cached,readonly
-      - ~/.gitconfig:/home/vscode/.gitconfig:cached,readonly
-      - ~/.ssh:/home/vscode/.ssh:cached,readonly
+      # and also your credentials: ~/.ssh is the key itself. That is what lets
+      # `execute` ssh out — to a Mac on the tailnet to run xcodebuild, say — and
+      # it only works if there is a private key in there to read. Read-only is
+      # enough to authenticate with; ssh only wants to write to add a host to
+      # known_hosts or to open a ControlMaster socket, and warns past both.
+      #
+      # `ro`, not `readonly`: compose accepts only the short form and drops the
+      # long one without a word, so `cached,readonly` mounts read-write and looks
+      # exactly like it worked. Check it rather than trust it —
+      #   docker compose config | grep -A3 '\.ssh' | grep read_only
+      # prints nothing when the flag has gone missing again.
+      - ~/.config/gh:/home/vscode/.config/gh:cached,ro
+      - ~/.gitconfig:/home/vscode/.gitconfig:cached,ro
+      - ~/.ssh:/home/vscode/.ssh:cached,ro
+      # Lets the tailscale CLI query the host's daemon. Read-only on the mount,
+      # which buys less than it looks like: the socket is mode 0666, so this is
+      # enough to run `tailscale status` and enough to reconfigure the host's
+      # tailnet identity. The container does not need it to reach tailnet
+      # addresses — the host routes those already — so drop it unless you want
+      # the CLI to work.
+      - /run/tailscale/tailscaled.sock:/run/tailscale/tailscaled.sock:ro
       # Issued tokens and registered OAuth clients. Without this, a restart
       # invalidates every token already handed out and connected clients start
       # answering 401 with no way to tell why.
