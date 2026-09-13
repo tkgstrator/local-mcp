@@ -98,7 +98,14 @@ impl Jobs {
             .lock()
             .ok()
             .and_then(|jobs| jobs.get(&id).cloned())
-            .with_context(|| format!("no such job: {id}"))
+            // An id that was handed out and has since gone is the common way to
+            // get here, and the reason is never the id itself.
+            .with_context(|| {
+                format!(
+                    "no such job: {id} (a job is forgotten {}s after it finishes)",
+                    self.retention.as_secs()
+                )
+            })
     }
 
     fn snapshot(state: &JobState) -> Finished {
@@ -203,7 +210,7 @@ impl Jobs {
             .map(|s| *s == Status::Running)
             .unwrap_or(false);
         if !running {
-            bail!("job {id} is no longer running");
+            bail!("job {id} has already finished; poll_job still has its output");
         }
         let Some(pid) = state.pid else {
             bail!("job {id} has no pid");
