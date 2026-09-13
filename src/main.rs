@@ -5,6 +5,7 @@ mod fs_ops;
 mod oauth;
 mod root;
 mod server;
+mod sessions;
 mod store;
 
 use std::sync::Arc;
@@ -21,7 +22,10 @@ use tokio_util::sync::CancellationToken;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{auth::AuthState, config::Config, oauth::OAuth, server::LocalMcp};
+use crate::{
+    auth::AuthState, config::Config, exec_ops::Jobs, oauth::OAuth, server::LocalMcp,
+    sessions::PersistentSessions, store::Store,
+};
 
 /// Path the MCP endpoint is mounted at.
 ///
@@ -50,18 +54,56 @@ async fn main() -> Result<()> {
     let config = Arc::new(Config::from_env()?);
     let cancel = CancellationToken::new();
 
+    // Opened up front and shared, because sessions are persisted whether or not
+    // the OAuth flow below is enabled.
+    let store = Arc::new(Store::open(&config.state_db).with_context(|| {
+        format!(
+            "cannot open the state database at {}",
+            config.state_db.display()
+        )
+    })?);
+    // Once at startup. Sessions are read while serving tool calls, so the
+    // sweep does not belong on that path.
+    match store.sweep_sessions(config.session_retention) {
+        Ok(0) => {},
+        Ok(dropped) => tracing::info!(dropped, "forgot sessions past their retention"),
+        Err(error) => tracing::warn!(%error, "cannot sweep expired sessions"),
+    }
+
     let service = {
         // Read before the closure takes ownership of the Arc.
         let allowed_hosts = config.allowed_hosts.clone();
         let config = config.clone();
-        StreamableHttpService::new(
-            move || Ok(LocalMcp::new(config.clone())),
-            LocalSessionManager::default().into(),
+
+        // One table for the whole process. The factory below is called once per
+        // session, so a `Jobs` built inside it would give every connection its
+        // own empty table, and a job id issued before the client reconnected
+        // would come back as "no such job". Nothing is crossing a trust
+        // boundary by being shared: every session is holding the same bearer
+        // token and working in the same root.
+        let jobs = Jobs::new(config.job_retention);
+
+        // Only decides how long a session stays in memory. Expiry is not
+        // something a client can observe any more, the store below rebuilding
+        // whatever this drops, so the setting is about footprint rather than
+        // about anybody's session surviving.
+        let mut sessions = LocalSessionManager::default();
+        sessions.session_config.keep_alive = config.session_keep_alive;
+
+        // The 404 a client gets for a session the server has forgotten reads as
+        // "this server is gone". With a store the SDK reloads the handshake and
+        // serves the request on the same id instead.
+        let mut server_config = StreamableHttpServerConfig::default()
             // The SDK allows only localhost by default, so a request arriving
             // under a real hostname is refused before it reaches any tool.
-            StreamableHttpServerConfig::default()
-                .with_cancellation_token(cancel.child_token())
-                .with_allowed_hosts(allowed_hosts),
+            .with_cancellation_token(cancel.child_token())
+            .with_allowed_hosts(allowed_hosts);
+        server_config.session_store = Some(Arc::new(PersistentSessions::new(store.clone())));
+
+        StreamableHttpService::new(
+            move || Ok(LocalMcp::new(config.clone(), jobs.clone())),
+            Arc::new(sessions),
+            server_config,
         )
     };
 
@@ -70,14 +112,7 @@ async fn main() -> Result<()> {
     let oauth = config
         .public_url
         .as_ref()
-        .map(|url| OAuth::new(url.clone(), config.token.clone(), &config.state_db).map(Arc::new))
-        .transpose()
-        .with_context(|| {
-            format!(
-                "cannot open the OAuth state database at {}",
-                config.state_db.display()
-            )
-        })?;
+        .map(|url| Arc::new(OAuth::new(url.clone(), config.token.clone(), store.clone())));
 
     let auth_state = AuthState {
         config: config.clone(),
@@ -141,6 +176,11 @@ async fn main() -> Result<()> {
         root = %config.root.path().display(),
         bind = %config.bind,
         path = MOUNT_PATH,
+        // Both of these decide whether a client that steps away comes back to a
+        // working session, so they belong in the line you look at first.
+        session_keep_alive = ?config.session_keep_alive,
+        session_retention = ?config.session_retention,
+        job_retention = ?config.job_retention,
         "local-mcp listening"
     );
 
