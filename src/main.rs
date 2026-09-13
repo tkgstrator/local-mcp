@@ -15,11 +15,14 @@ use axum::{
     Router, middleware,
     routing::{get, post},
 };
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+use rmcp::transport::{
+    common::http_header::{HEADER_MCP_METHOD, HEADER_MCP_NAME},
+    streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    },
 };
 use tokio_util::sync::CancellationToken;
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
@@ -162,9 +165,22 @@ async fn main() -> Result<()> {
         // never connected, and there is no other way to tell the two apart.
         .layer(
             TraceLayer::new_for_http()
-                // The span carries the method and path; without raising it too,
-                // the log says a request finished but not which one.
-                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                // The span has to be built here rather than taken from the
+                // defaults: every call arrives as `POST /local`, so the line
+                // says a request finished without saying what it was. Since
+                // SEP-2243 the JSON-RPC method travels in a header, which is
+                // what separates a tool call from the handshake and discovery a
+                // client does on its way in. The level is raised along with it,
+                // because the default filter would otherwise hide these.
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info_span!(
+                        "request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                        mcp_method = %auth::header(request, HEADER_MCP_METHOD),
+                        mcp_name = %auth::header(request, HEADER_MCP_NAME),
+                    )
+                })
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
         );
 

@@ -1,16 +1,96 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
+    ErrorData as McpError, RoleServer, ServerHandler,
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext, wrapper::Parameters},
+    model::{
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        Implementation, JsonObject, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+        ResultType, ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router,
 };
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{config::Config, exec_ops::Jobs, fs_ops};
 
 const EXEC_TOOLS: [&str; 4] = ["execute", "start_command", "poll_job", "stop_job"];
+
+/// How long a client may reuse the tool list before asking for it again.
+///
+/// The SDK answers `tools/list` with `ttlMs: 0`, which tells a client on
+/// 2026-07-28 that the list is never reusable. Sessions are gone in that
+/// version, so that number is the only thing standing between a conversation
+/// and a fresh round trip through the tunnel every time it might reach for a
+/// tool — and a single failed round trip is enough for the tools to disappear
+/// from a connector that still reads as connected. The list only changes when
+/// this binary does, so there is nothing to gain from re-fetching it that
+/// often.
+const TOOL_LIST_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// How long the tool list may be reused, and by whom, for a client that
+/// negotiated a version where those fields exist at all. `None` for anyone
+/// older: the fields arrived with 2026-07-28 (SEP-2549), and a client that
+/// predates them has no way to read them.
+fn cache_hints(version: Option<ProtocolVersion>) -> Option<(u64, CacheScope)> {
+    (version? >= ProtocolVersion::V_2026_07_28).then_some((
+        TOOL_LIST_TTL.as_millis() as u64,
+        // Public rather than private: the list is the same for everyone who
+        // gets past the token, so no part of it belongs to one caller rather
+        // than another.
+        CacheScope::Public,
+    ))
+}
+
+/// Longest string argument that goes into the log as itself. A path or a
+/// command is worth seeing in full; the contents of a file being written are
+/// not, and would push everything else off the line.
+const ARGUMENT_ELISION: usize = 160;
+
+/// Longest error detail carried into the log from a tool that reported its own
+/// failure.
+const DETAIL_ELISION: usize = 240;
+
+fn elide(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((cut, _)) => format!("{}... [{} bytes]", &text[..cut], text.len()),
+        None => text.to_owned(),
+    }
+}
+
+/// The arguments of a call, rendered for one log line.
+fn arguments(arguments: Option<&JsonObject>) -> String {
+    let Some(arguments) = arguments else {
+        return "{}".to_owned();
+    };
+    let shown: JsonObject = arguments
+        .iter()
+        .map(|(key, value)| {
+            let value = match value {
+                Value::String(text) => Value::String(elide(text, ARGUMENT_ELISION)),
+                other => other.clone(),
+            };
+            (key.clone(), value)
+        })
+        .collect();
+    serde_json::to_string(&shown).unwrap_or_else(|_| "<unprintable>".to_owned())
+}
+
+/// What a tool said when it reported a failure of its own.
+fn detail(result: &CallToolResult) -> String {
+    result
+        .content
+        .first()
+        .and_then(|block| block.as_text())
+        .map(|text| elide(&text.text, DETAIL_ELISION))
+        .unwrap_or_else(|| "<no content>".to_owned())
+}
 
 #[derive(Clone)]
 pub struct LocalMcp {
@@ -28,7 +108,15 @@ fn failed(error: anyhow::Error) -> McpError {
 }
 
 fn job_id(raw: &str) -> Result<Uuid, McpError> {
-    Uuid::parse_str(raw).map_err(|_| McpError::invalid_params(format!("bad job id: {raw}"), None))
+    Uuid::parse_str(raw).map_err(|_| {
+        McpError::invalid_params(
+            format!(
+                "not a job id: {raw} (execute and start_command hand one back when they leave \
+                 something running)"
+            ),
+            None,
+        )
+    })
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -250,6 +338,64 @@ impl LocalMcp {
 // which would silently resurrect the tools removed in `new`.
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for LocalMcp {
+    /// Same dispatch the macro would generate, with a line on either side of it.
+    ///
+    /// Both lines earn their place, not just the second one: a call that starts
+    /// and never finishes is exactly the shape a client that gave up waiting
+    /// leaves behind, and without the first line there is nothing in the log to
+    /// say the call ever arrived.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let tool = request.name.clone();
+        tracing::info!(%tool, arguments = %arguments(request.arguments.as_ref()), "tool call");
+
+        let started = Instant::now();
+        let outcome = self
+            .tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await;
+        let elapsed_ms = started.elapsed().as_millis();
+
+        match &outcome {
+            Err(error) => tracing::warn!(%tool, elapsed_ms, %error, "tool call failed"),
+            // A failure the SDK folds into the result rather than returning as
+            // an error still needs to read as a failure here.
+            Ok(CallToolResponse::Complete(result)) if result.is_error == Some(true) => {
+                tracing::warn!(%tool, elapsed_ms, detail = %detail(result), "tool call failed");
+            },
+            Ok(_) => tracing::info!(%tool, elapsed_ms, "tool call done"),
+        }
+
+        outcome
+    }
+
+    /// Same list the macro would generate, with a cache lifetime on it.
+    ///
+    /// Defining it here is what keeps `tool_handler` from generating its own:
+    /// the macro only fills in the methods the impl block is missing.
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let (ttl_ms, cache_scope) = match cache_hints(context.protocol_version()) {
+            Some((ttl_ms, scope)) => (Some(ttl_ms), Some(scope)),
+            None => (None, None),
+        };
+
+        Ok(ListToolsResult {
+            result_type: Some(ResultType::COMPLETE),
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms,
+            cache_scope,
+        })
+    }
+
     fn get_info(&self) -> ServerInfo {
         let root = self.config.root.path().display();
         let shell = if self.config.allow_exec {
@@ -369,5 +515,27 @@ mod tests {
             assert!(!offered.contains(&name.to_string()), "{name} still offered");
         }
         assert!(offered.contains(&"read_file".to_string()));
+    }
+
+    /// The regression this guards: the SDK answers `tools/list` with `ttlMs: 0`,
+    /// and 2026-07-28 has no sessions to fall back on, so that number leaves a
+    /// conversation re-fetching the list through the tunnel every time it might
+    /// reach for a tool. One fetch that does not come back is then enough for
+    /// the tools to disappear from a connector that still reads as connected.
+    #[test]
+    fn the_tool_list_is_worth_caching_for_clients_that_can_cache_it() {
+        let (ttl_ms, scope) = cache_hints(Some(ProtocolVersion::V_2026_07_28))
+            .expect("2026-07-28 is where the fields came from");
+
+        assert!(ttl_ms > 0, "ttlMs: 0 asks the client not to cache at all");
+        assert_eq!(scope, CacheScope::Public);
+    }
+
+    /// Older clients have to be answered without the fields rather than with
+    /// them set to something harmless: they do not exist in those versions.
+    #[test]
+    fn an_older_client_is_told_nothing_about_caching() {
+        assert_eq!(cache_hints(Some(ProtocolVersion::V_2025_06_18)), None);
+        assert_eq!(cache_hints(None), None);
     }
 }
