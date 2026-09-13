@@ -21,6 +21,18 @@ pub struct Config {
     pub max_output: usize,
     pub command_timeout: Duration,
     pub allow_exec: bool,
+    /// How long a finished job stays pollable before it is dropped. The job
+    /// table is shared by every session, so it outlives any one client and
+    /// needs a bound that does not depend on connections going away.
+    pub job_retention: Duration,
+    /// How long a session stays resident in memory with no request arriving on
+    /// it. `None` disables the check. Invisible to clients: a session dropped
+    /// for being idle is rebuilt from `state_db` on the next request.
+    pub session_keep_alive: Option<Duration>,
+    /// How long a session id stays revivable after it was last used. This is
+    /// the one a client actually feels, `session_keep_alive` being only about
+    /// how much is kept in memory meanwhile.
+    pub session_retention: Duration,
 }
 
 fn var(key: &str) -> Option<String> {
@@ -94,6 +106,34 @@ impl Config {
             Some("false" | "0" | "no")
         );
 
+        let job_retention = var("LOCAL_MCP_JOB_RETENTION")
+            .map(|v| v.parse::<u64>())
+            .transpose()
+            .context("LOCAL_MCP_JOB_RETENTION must be seconds")?
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(3600));
+
+        // The SDK defaults this to 5 minutes, which is shorter than the gap
+        // between two turns of one conversation while another is being worked
+        // on in between, so the common case became a restore rather than a
+        // hit. Restores are cheap and invisible, but they replay the handshake,
+        // and an hour covers that gap without leaving every session whose HTTP
+        // connection dropped silently resident for the life of the process.
+        let session_retention = var("LOCAL_MCP_SESSION_RETENTION")
+            .map(|v| v.parse::<u64>())
+            .transpose()
+            .context("LOCAL_MCP_SESSION_RETENTION must be seconds")?
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(60 * 60 * 24 * 30));
+
+        let session_keep_alive = match var("LOCAL_MCP_SESSION_KEEP_ALIVE").as_deref() {
+            None => Some(Duration::from_secs(3600)),
+            Some("off" | "none" | "0") => None,
+            Some(value) => Some(Duration::from_secs(value.parse::<u64>().context(
+                "LOCAL_MCP_SESSION_KEEP_ALIVE must be seconds, or off to disable",
+            )?)),
+        };
+
         Ok(Self {
             root,
             token,
@@ -104,6 +144,9 @@ impl Config {
             max_output,
             command_timeout,
             allow_exec,
+            job_retention,
+            session_keep_alive,
+            session_retention,
         })
     }
 }
