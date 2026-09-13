@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     process::Stdio,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -34,12 +34,19 @@ struct JobState {
     status: Mutex<Status>,
     /// Flips to true exactly once, so a waiter that arrives late still sees it.
     done: watch::Sender<bool>,
+    /// When the process exited, so `reap` can tell a job that merely finished
+    /// from one whose output nobody is coming back for.
+    finished_at: Mutex<Option<Instant>>,
     pid: Option<u32>,
 }
 
-#[derive(Clone, Default)]
+/// Shared by every session rather than built per connection: a job id handed
+/// out in one turn has to still resolve after the client reconnects, and a
+/// client whose session expires opens a new one without being asked to.
+#[derive(Clone)]
 pub struct Jobs {
     inner: Arc<Mutex<HashMap<Uuid, Arc<JobState>>>>,
+    retention: Duration,
 }
 
 pub struct Finished {
@@ -65,6 +72,27 @@ async fn pump<R: AsyncReadExt + Unpin>(mut reader: R, state: Arc<JobState>, max_
 }
 
 impl Jobs {
+    pub fn new(retention: Duration) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            retention,
+        }
+    }
+
+    /// Drop jobs that finished longer than `retention` ago. Called from `start`
+    /// rather than from a timer: the table only grows when a job is started, so
+    /// that is the only moment it can need trimming. A job still running is
+    /// never reaped, however long it has been going.
+    fn reap(&self) {
+        let Ok(mut jobs) = self.inner.lock() else {
+            return;
+        };
+        jobs.retain(|_, state| {
+            let finished_at = state.finished_at.lock().ok().and_then(|at| *at);
+            finished_at.is_none_or(|at| at.elapsed() < self.retention)
+        });
+    }
+
     fn get(&self, id: Uuid) -> Result<Arc<JobState>> {
         self.inner
             .lock()
@@ -86,6 +114,8 @@ impl Jobs {
     /// Launch a command in its own process group so that stopping it takes the
     /// whole tree down rather than orphaning grandchildren.
     pub fn start(&self, root: &Root, command: &str, max_output: usize) -> Result<Uuid> {
+        self.reap();
+
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(command)
@@ -104,6 +134,7 @@ impl Jobs {
             output: Mutex::new(Vec::new()),
             status: Mutex::new(Status::Running),
             done,
+            finished_at: Mutex::new(None),
             pid: child.id(),
         });
 
@@ -124,6 +155,9 @@ impl Jobs {
                     Ok(None) => Status::Signalled,
                     Err(_) => Status::Signalled,
                 };
+            }
+            if let Ok(mut finished_at) = waiter.finished_at.lock() {
+                *finished_at = Some(Instant::now());
             }
             let _ = waiter.done.send(true);
         });
@@ -180,5 +214,83 @@ impl Jobs {
             bail!("failed to signal job {id}");
         }
         Ok(format!("stopped job {id}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAX: usize = 4096;
+    /// Long enough that nothing is reaped while a test is looking at it.
+    const FOREVER: Duration = Duration::from_secs(3600);
+
+    fn sandbox() -> (tempfile::TempDir, Root) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Root::new(dir.path()).unwrap();
+        (dir, root)
+    }
+
+    /// The regression this module exists for: `LocalMcp` is rebuilt per session,
+    /// so `Jobs` is cloned rather than created there. A clone that did not share
+    /// the table would answer "no such job" for every id issued before the
+    /// client reconnected.
+    #[tokio::test]
+    async fn a_job_started_on_one_clone_resolves_through_another() {
+        let (_dir, root) = sandbox();
+        let first = Jobs::new(FOREVER);
+        let second = first.clone();
+
+        let id = first.start(&root, "echo shared", MAX).unwrap();
+        let finished = second.wait(id, FOREVER).await.unwrap().unwrap();
+
+        assert_eq!(finished.status, Status::Exited(0));
+        assert_eq!(finished.output.trim(), "shared");
+        assert_eq!(second.poll(id).unwrap().0, "echo shared");
+    }
+
+    #[tokio::test]
+    async fn a_finished_job_is_dropped_once_its_retention_has_passed() {
+        let (_dir, root) = sandbox();
+        let jobs = Jobs::new(Duration::ZERO);
+
+        let stale = jobs.start(&root, "true", MAX).unwrap();
+        jobs.wait(stale, FOREVER).await.unwrap().unwrap();
+
+        // Reaping happens on `start`, so it takes a second job to trigger it.
+        jobs.start(&root, "true", MAX).unwrap();
+
+        assert!(
+            jobs.poll(stale).is_err(),
+            "a job past its retention should be gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_running_job_is_never_reaped() {
+        let (_dir, root) = sandbox();
+        let jobs = Jobs::new(Duration::ZERO);
+
+        let running = jobs.start(&root, "sleep 30", MAX).unwrap();
+        jobs.start(&root, "true", MAX).unwrap();
+
+        let (command, snapshot) = jobs.poll(running).expect("still running, so still known");
+        assert_eq!(command, "sleep 30");
+        assert_eq!(snapshot.status, Status::Running);
+
+        jobs.stop(running).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stopping_a_job_takes_its_children_with_it() {
+        let (_dir, root) = sandbox();
+        let jobs = Jobs::new(FOREVER);
+
+        let id = jobs.start(&root, "sleep 30 & sleep 30", MAX).unwrap();
+        jobs.stop(id).unwrap();
+
+        let finished = jobs.wait(id, FOREVER).await.unwrap().unwrap();
+        assert_eq!(finished.status, Status::Signalled);
+        assert!(jobs.stop(id).is_err(), "a dead job cannot be stopped twice");
     }
 }
