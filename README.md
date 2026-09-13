@@ -81,11 +81,30 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_JOB_RETENTION` | `3600` | Seconds a finished job stays pollable. The table is shared by every session, so it needs a bound of its own; a job still running is never dropped. |
 | `LOCAL_MCP_SESSION_KEEP_ALIVE` | `3600` | Seconds a session stays resident in memory with no request on it. Not something a client can observe — whatever this drops is rebuilt from `LOCAL_MCP_STATE_DB` on the next request — so it trades memory against how often that replay happens. `off` keeps every session resident. |
 | `LOCAL_MCP_SESSION_RETENTION` | `2592000` | Seconds a session id stays revivable after it was last used, swept at startup. This is the one a client feels: past it, the id is gone for good and the client has to open a new session. Thirty days by default. A client that ends its session with `DELETE` is forgotten immediately rather than waiting this out. |
-| `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
+| `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info,rmcp=warn` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals and failures. The SDK is included at `warn` because it turns some requests away before they reach this crate, and without its lines those look like unexplained refusals. `RUST_LOG` is honoured too. |
 
-Every request is logged with its method, path and status, and refusals say
-whether the token was missing or wrong. A client that cannot connect is visible
-here — silence means the request never arrived.
+Sessions are a pre-`2026-07-28` idea. That version removed them (SEP-2567), so a
+client negotiating it is served statelessly and the three session settings above
+do not apply to it: there is no session id to keep alive, revive, or lose.
+
+Every request is logged with its method, path, status, and the JSON-RPC method
+it carried — `POST /local` is otherwise the same line for a tool call and for
+the discovery a client does on its way in. Each call is logged twice, arriving
+with its arguments and leaving with how long it took, so a call logged as
+started and never finished is recognisable as a client that gave up waiting.
+Refusals say whether the token was missing or wrong, and name the client that
+sent it. A client that cannot connect is visible here — silence means the
+request never arrived.
+
+```
+INFO request{method=POST uri=/local mcp_method=tools/call mcp_name=execute}: local_mcp::server: tool call tool=execute arguments={"command":"sleep 2; echo ok"}
+INFO request{method=POST uri=/local mcp_method=tools/call mcp_name=execute}: local_mcp::server: tool call done tool=execute elapsed_ms=2023
+WARN request{method=POST uri=/local mcp_method=server/discover mcp_name=-}: local_mcp::auth: rejected request with no bearer token user_agent=ChatGPT-User/1.0
+```
+
+Arguments are logged as sent, except that a string past 160 characters is cut
+there and its real length noted (`"...... [4096 bytes]"`), so writing a file does
+not put the file in the log.
 
 Endpoints: `POST /local` (authenticated) and `GET /healthz` (not).
 
