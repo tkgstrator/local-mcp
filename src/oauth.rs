@@ -8,7 +8,6 @@
 //! those clients insist on.
 
 use std::{
-    path::Path,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -37,16 +36,19 @@ const TOKEN_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 pub struct OAuth {
     issuer: String,
     consent_secret: String,
-    store: Store,
+    /// Shared with the session store rather than owned: both halves keep their
+    /// rows in the one database, and opening it twice would mean two writers
+    /// on the same file for no gain.
+    store: Arc<Store>,
 }
 
 impl OAuth {
-    pub fn new(issuer: String, consent_secret: String, database: &Path) -> Result<Self> {
-        Ok(Self {
+    pub fn new(issuer: String, consent_secret: String, store: Arc<Store>) -> Self {
+        Self {
             issuer,
             consent_secret,
-            store: Store::open(database)?,
-        })
+            store,
+        }
     }
 
     /// Where a client should look for the metadata that describes this flow.
