@@ -18,6 +18,18 @@ pub struct AuthState {
     pub oauth: Option<Arc<OAuth>>,
 }
 
+/// Reads a header for a log line, as `-` when it is not there. Generic over
+/// the body because `main` labels its request spans with the same two headers,
+/// where the body is still whatever the server was handed.
+pub fn header<B>(request: &axum::http::Request<B>, name: &str) -> String {
+    request
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("-")
+        .to_owned()
+}
+
 fn token_matches(expected: &str, presented: &str) -> bool {
     // Length is not secret; the bytes are. Comparing only equal-length inputs
     // keeps the comparison constant-time over the part that matters.
@@ -55,7 +67,12 @@ pub async fn guard(
         response
     };
 
-    let path = request.uri().path().to_string();
+    // The surrounding span already says which request this is, down to the
+    // JSON-RPC method: a request refused here never reaches the SDK, and the
+    // body is never read, so those headers are all there is to go on. Only the
+    // client's name is missing from it, and that is what separates one probing
+    // to discover the OAuth flow from one that was talking to us a minute ago.
+    let user_agent = header(&request, header::USER_AGENT.as_str());
     let Some(presented) = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -64,7 +81,7 @@ pub async fn guard(
     else {
         // Logged rather than silently refused: a client probing without
         // credentials looks identical to no traffic at all otherwise.
-        tracing::warn!(%path, "rejected request with no bearer token");
+        tracing::warn!(%user_agent, "rejected request with no bearer token");
         return Err(unauthorized());
     };
 
@@ -83,7 +100,7 @@ pub async fn guard(
         });
 
     if !accepted {
-        tracing::warn!(%path, "rejected request with invalid bearer token");
+        tracing::warn!(%user_agent, "rejected request with invalid bearer token");
         return Err(unauthorized());
     }
 
