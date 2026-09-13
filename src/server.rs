@@ -91,7 +91,7 @@ pub struct JobArgs {
 
 #[tool_router]
 impl LocalMcp {
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>, jobs: Jobs) -> Self {
         let mut tool_router = Self::tool_router();
         if !config.allow_exec {
             for name in EXEC_TOOLS {
@@ -100,7 +100,7 @@ impl LocalMcp {
         }
         Self {
             config,
-            jobs: Jobs::default(),
+            jobs,
             tool_router,
         }
     }
@@ -272,5 +272,102 @@ impl ServerHandler for LocalMcp {
                 "File tools are confined to {root}; their paths are relative to that root \
                  and cannot escape it.{shell}"
             ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, path::PathBuf, time::Duration};
+
+    use super::*;
+    use crate::root::Root;
+
+    fn config(root: Root) -> Arc<Config> {
+        Arc::new(Config {
+            root,
+            token: "0123456789abcdef".to_string(),
+            bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            allowed_hosts: Vec::new(),
+            public_url: None,
+            state_db: PathBuf::from("/var/lib/local-mcp/oauth.db"),
+            max_output: 4096,
+            command_timeout: Duration::from_secs(5),
+            allow_exec: true,
+            job_retention: Duration::from_secs(3600),
+            session_keep_alive: None,
+            session_retention: Duration::from_secs(60 * 60 * 24 * 30),
+        })
+    }
+
+    fn body(result: &CallToolResult) -> String {
+        result
+            .content
+            .first()
+            .and_then(|block| block.as_text())
+            .map(|text| text.text.clone())
+            .expect("a tool that succeeded returns text")
+    }
+
+    /// The regression this guards: `main` calls `LocalMcp::new` once per session,
+    /// so a handler that built its own `Jobs` gave every session an empty table.
+    /// A client whose session expires opens a new one and comes back holding a
+    /// job id from the old one, and that id has to still resolve.
+    #[tokio::test]
+    async fn a_job_outlives_the_session_it_was_started_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(Root::new(dir.path()).unwrap());
+        let jobs = Jobs::new(config.job_retention);
+
+        let first = LocalMcp::new(config.clone(), jobs.clone());
+        let second = LocalMcp::new(config.clone(), jobs.clone());
+
+        let started = first
+            .start_command(Parameters(CommandArgs {
+                command: "echo across-sessions".to_string(),
+            }))
+            .await
+            .unwrap();
+        let id = body(&started)
+            .trim()
+            .rsplit(' ')
+            .next()
+            .expect("start_command names the job id last")
+            .to_string();
+
+        // `wait` on the shared table, so the assertion does not race the shell.
+        jobs.wait(job_id(&id).unwrap(), Duration::from_secs(10))
+            .await
+            .unwrap()
+            .expect("echo finishes well inside the timeout");
+
+        let polled = second
+            .poll_job(Parameters(JobArgs { job_id: id }))
+            .await
+            .expect("the second session knows the job the first one started");
+        let report = body(&polled);
+        assert!(report.contains("exited with code 0"), "{report}");
+        assert!(report.contains("across-sessions"), "{report}");
+    }
+
+    /// `allow_exec = false` has to remove the routes, not merely hide them.
+    #[tokio::test]
+    async fn disabling_exec_removes_the_shell_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = (*config(Root::new(dir.path()).unwrap())).clone();
+        settings.allow_exec = false;
+        let settings = Arc::new(settings);
+
+        let server = LocalMcp::new(settings.clone(), Jobs::new(settings.job_retention));
+        let offered: Vec<_> = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+
+        for name in EXEC_TOOLS {
+            assert!(!offered.contains(&name.to_string()), "{name} still offered");
+        }
+        assert!(offered.contains(&"read_file".to_string()));
     }
 }

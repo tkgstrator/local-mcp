@@ -75,9 +75,12 @@ only what you are willing to lose, and:
 | `LOCAL_MCP_ALLOW_EXEC` | `true` | `false` removes all shell tools. |
 | `LOCAL_MCP_ALLOWED_HOSTS` | *(empty)* | Comma-separated hostnames accepted in the `Host` header. Empty disables the check. Set it to your own hostname to reject requests arriving under any other name. |
 | `LOCAL_MCP_PUBLIC_URL` | *(empty)* | Public origin, e.g. `https://mcp.example.com`. Setting it enables the OAuth flow below; without it only the static token is accepted. |
-| `LOCAL_MCP_STATE_DB` | `/var/lib/local-mcp/oauth.db` | SQLite file holding issued tokens and registered OAuth clients. Only read when the OAuth flow is enabled. Must sit outside `LOCAL_MCP_ROOT`, or the server refuses to start: the file tools can read anything under the root, and this file is a set of live credentials. Put a volume on its directory. |
+| `LOCAL_MCP_STATE_DB` | `/var/lib/local-mcp/oauth.db` | SQLite file holding issued tokens, registered OAuth clients, and the handshake behind each session id. Always opened, since sessions are persisted whether or not the OAuth flow is enabled. Must sit outside `LOCAL_MCP_ROOT`, or the server refuses to start: the file tools can read anything under the root, and this file is a set of live credentials. Put a volume on its directory. |
 | `LOCAL_MCP_MAX_OUTPUT` | `1048576` | Byte ceiling on tool output. |
 | `LOCAL_MCP_COMMAND_TIMEOUT` | `30` | Seconds before `execute` hands back a `job_id`. |
+| `LOCAL_MCP_JOB_RETENTION` | `3600` | Seconds a finished job stays pollable. The table is shared by every session, so it needs a bound of its own; a job still running is never dropped. |
+| `LOCAL_MCP_SESSION_KEEP_ALIVE` | `3600` | Seconds a session stays resident in memory with no request on it. Not something a client can observe — whatever this drops is rebuilt from `LOCAL_MCP_STATE_DB` on the next request — so it trades memory against how often that replay happens. `off` keeps every session resident. |
+| `LOCAL_MCP_SESSION_RETENTION` | `2592000` | Seconds a session id stays revivable after it was last used, swept at startup. This is the one a client feels: past it, the id is gone for good and the client has to open a new session. Thirty days by default. A client that ends its session with `DELETE` is forgotten immediately rather than waiting this out. |
 | `LOCAL_MCP_LOG` | `local_mcp=info,tower_http=info` | Log filter. `debug` for request bodies and transport detail; `warn` to keep only refusals. `RUST_LOG` is honoured too. |
 
 Every request is logged with its method, path and status, and refusals say
