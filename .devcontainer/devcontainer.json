@@ -9,7 +9,7 @@
   "remoteUser": "vscode",
   "remoteEnv": {
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
-    "CODEX_HOME": "/home/vscode/app/.codex",
+    "CODEX_HOME": "${containerWorkspaceFolder}/.codex",
     "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
     "ANTHROPIC_BASE_URL": "${localEnv:ANTHROPIC_BASE_URL}",
     "ANTHROPIC_AUTH_TOKEN": "${localEnv:ANTHROPIC_AUTH_TOKEN}",
