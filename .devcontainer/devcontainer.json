@@ -8,6 +8,7 @@
   "shutdownAction": "stopCompose",
   "remoteUser": "vscode",
   "remoteEnv": {
+    "CODEX_HOME": "/home/vscode/app/.codex",
     "CLAUDE_CODE_AUTO_MODE_SERVER": "0",
     "ANTHROPIC_BASE_URL": "${localEnv:ANTHROPIC_BASE_URL}",
     "ANTHROPIC_AUTH_TOKEN": "${localEnv:ANTHROPIC_AUTH_TOKEN}",
