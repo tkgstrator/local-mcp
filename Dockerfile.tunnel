@@ -1,0 +1,35 @@
+# Secure MCP Tunnel client, official binary pinned by version and sha256.
+# Changing TUNNEL_VERSION requires updating both hashes below.
+FROM debian:bookworm-slim AS fetch
+ARG TARGETARCH
+ARG TUNNEL_VERSION=v0.0.15
+ARG TUNNEL_SHA256_AMD64=8c836dc5d68d68b663d9a5c5b28ff9fa780d9f7a3fffb1c306880b8f32fab5f1
+ARG TUNNEL_SHA256_ARM64=c51bfd883fc22e3445494a03c0179875176564bde470661b308fd83af5d01abb
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /dl
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) sha="${TUNNEL_SHA256_AMD64}" ;; \
+      arm64) sha="${TUNNEL_SHA256_ARM64}" ;; \
+      *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/openai/tunnel-client/releases/download/${TUNNEL_VERSION}/tunnel-client-${TUNNEL_VERSION}-linux-${TARGETARCH}.zip"; \
+    curl -fsSL -o tunnel.zip "${url}"; \
+    echo "${sha}  tunnel.zip" | sha256sum -c -; \
+    unzip -q tunnel.zip -d out; \
+    install -d /dist/licenses; \
+    install -m 0755 out/tunnel-client /dist/tunnel-client; \
+    find out -type f \( -iname 'LICENSE*' -o -iname 'NOTICE*' -o -iname 'THIRD*' \) -exec cp {} /dist/licenses/ \;
+
+# Compose selects the secret-file owner's UID/GID; no capabilities are needed.
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=fetch /dist/tunnel-client /usr/local/bin/tunnel-client
+COPY --from=fetch /dist/licenses/ /usr/share/doc/tunnel-client/
+USER 1000:1000
+ENTRYPOINT ["tunnel-client"]
+CMD ["run", "--profile-file", "/etc/tunnel-client/config.yaml"]

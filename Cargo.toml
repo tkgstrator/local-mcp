@@ -1,6 +1,6 @@
 [package]
 name = "local-mcp"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -10,10 +10,13 @@ repository = "https://github.com/tkgstrator/local-mcp"
 [dependencies]
 rmcp = { version = "3.1.4", features = [
     "server",
+    "client",
+    "transport-streamable-http-client-reqwest",
     "macros",
     "schemars",
     "transport-streamable-http-server",
 ] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 axum = "0.8"
 tokio = { version = "1", features = [
     "fs",
