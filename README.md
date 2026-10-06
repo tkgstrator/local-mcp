@@ -20,10 +20,102 @@ Rust MCP SDK, which negotiates every protocol revision from `2024-11-05` through
 > sidecar has nobody sitting in front of it. The trade-off that replaces it is
 > described below.
 
+## Multiple filesystem hosts
+
+Use one central **server** and one **client (child agent)** on each host whose files you need. Register only the central `/local` endpoint with your MCP caller. The tool names stay fixed when you add hosts.
+
+| Runtime | Dockerfile | Image | Responsibility |
+| --- | --- | --- | --- |
+| Central router | `Dockerfile.server` | `ghcr.io/tkgstrator/local-mcp-server` | Discover children and forward explicitly targeted operations |
+| Child agent | `Dockerfile.client` | `ghcr.io/tkgstrator/local-mcp-client` | Read/write its mounted workspace and run its commands |
+| Existing standalone | `Dockerfile` | `ghcr.io/tkgstrator/local-mcp` | Existing direct filesystem endpoint |
+
+The role images are built and published by CI after these changes are merged/pushed. Until then, build from this checkout with the commands below. The central image has a minimal non-root Debian runtime; the child retains the existing development toolchains. Neither role requires a ChatGPT plugin registration of its own when another local service is the MCP caller.
+
+1. On each target host, configure the child environment. Bind to that host's Tailscale IP when the central server runs elsewhere; loopback is suitable only for a caller on the same host.
+
+   ```dotenv
+   LOCAL_MCP_HOSTNAME=gpu-server
+   LOCAL_MCP_CLIENT_BIND_IP=YOUR_TAILSCALE_IP
+   LOCAL_MCP_CLIENT_ALLOWED_HOSTS=gpu-server,YOUR_TAILSCALE_IP
+   LOCAL_MCP_CLIENT_PORT=8890
+   LOCAL_MCP_WORKSPACE=/path/to/workspace
+   LOCAL_MCP_CLIENT_TOKEN=YOUR_UNIQUE_CHILD_TOKEN
+   ```
+
+   ```sh
+   docker compose -f compose.client.yaml up -d --build
+   ```
+
+2. On the central host, make a private config directory **outside every exposed workspace**. Copy `connections.example.json` to `connections.json` there, and put each child's token in the referenced file. Relative `token_file` paths resolve against the registry directory. Files must be readable by container UID 1000; do not make them world-readable.
+
+   ```json
+   {
+     "connections": [
+       {
+         "hostname": "gpu-server",
+         "aliases": ["100.64.0.2"],
+         "url": "http://100.64.0.2:8890/local",
+         "token_file": "/etc/local-mcp/gpu.token"
+       }
+     ]
+   }
+   ```
+
+   ```dotenv
+   LOCAL_MCP_CONFIG_DIR=/path/outside/workspaces/localmcp-config
+   LOCAL_MCP_SERVER_TOKEN=YOUR_UNIQUE_CENTRAL_TOKEN
+   LOCAL_MCP_SERVER_PORT=8891
+   ```
+
+   ```sh
+   docker compose -f compose.server.yaml up -d --build
+   ```
+
+   Set `LOCAL_MCP_SERVER_BIND_IP` and `LOCAL_MCP_SERVER_ALLOWED_HOSTS` when exposing this endpoint over the tailnet. Set `LOCAL_MCP_SERVER_PUBLIC_URL` only when enabling the existing OAuth flow behind an HTTPS frontend. Tailscale/private child connections can use HTTP; the host routes the container's traffic to the tailnet. MagicDNS names require a working tailnet DNS configuration in Docker; an explicit Tailscale IP avoids that dependency. Restrict child access to the central host using your tailnet ACLs.
+
+3. Discover connections, then explicitly select the host containing the files:
+
+   ```text
+   connections()
+   read_file(connection="gpu-server", path="project/README.md")
+   edit_file(connection="100.64.0.2", path="project/config.toml", old_text="...", new_text="...")
+   start_command(connection="gpu-server", command="cargo test")
+   poll_job(connection="gpu-server", job_id="...")
+   ```
+
+   Discovery returns hostname, aliases, root, availability and shell capability. Unreachable hosts remain listed as `unavailable`. Paths are relative to the selected child's root. The central endpoint requires `connection` on **every** file/command/job call, even with one child; omitted or unknown hosts fail. Use the same connection for a job's polling/stopping. The router does not retry submitted tools or switch hosts after a transport failure; an unconfirmed response means a write/command may already have executed.
+
+Settings added in 0.6.0:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LOCAL_MCP_MODE` | `standalone` | `server` routes calls; `client` serves a local workspace |
+| `LOCAL_MCP_HOSTNAME` | `local` | Required in client mode; explicit workspace host identity |
+| `LOCAL_MCP_ALIASES` | empty | Comma-separated aliases accepted by this child |
+| `LOCAL_MCP_CONNECTIONS_FILE` | unset | Required in server mode; administrator-owned connection registry |
+
+Registry URLs must end in `/local` and cannot contain credentials, queries or fragments. Redirects and SDK expired-session request replay are disabled. The registered hostname must match the child's configured LOCAL_MCP_HOSTNAME; mismatches fail before any file operation. Duplicate hostname/IP aliases and credential files inside the root (including symlinks) are rejected. The registry is loaded at startup; restart the central server to add hosts. Central `LOCAL_MCP_ALLOW_EXEC=false` removes shell routes even when a child supports them.
+
+When LocalGPT exposes these tools it can prefix them as `localmcp_connections`, `localmcp_read_file`, etc. Its gateway must allow the new `connections` tool and preserve the `connection` argument. Passing a hostname from Codex into a LocalGPT session, and letting the browser ChatGPT worker request these tools, are separate LocalGPT integration changes; this server does not implement them.
+
+Verification from a checkout:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --all-features --workspace --locked
+cargo build --locked
+python3 tests/multi_host.py
+```
+
+The integration test starts two real child servers with separate temporary roots and a central router. It checks read/write/edit routing, IP aliases, job ownership, concurrent calls, a disconnected child, exec policy and standalone compatibility.
+
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
+| `connections` | Discover filesystem hosts, roots and availability. |
 | `read_file` | Read a text file, returned with line numbers. Supports `offset` / `limit`. |
 | `write_file` | Create a file or replace its contents. Creates parent directories. |
 | `edit_file` | Replace one exact occurrence. Fails if absent or ambiguous. |
@@ -718,3 +810,5 @@ them, so `wip` will not pass.
 ## License
 
 MIT
+
+After building the role images as localmcp-server:0.6.0 and localmcp-client:0.6.0, run `python3 tests/docker_roles.py` to verify non-root runtime and central-to-child routing on an isolated Docker network. The test removes its containers, network and config volume on exit.

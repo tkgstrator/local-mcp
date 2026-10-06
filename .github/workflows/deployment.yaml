@@ -35,16 +35,18 @@ jobs:
   # arm64 under QEMU instead would work, but compiling Rust through emulation
   # is slow enough to dominate the whole pipeline.
   build:
-    name: build ${{ matrix.platform }}
+    name: build ${{ matrix.role }} ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
+          - {platform: linux/amd64, runner: ubuntu-latest, role: standalone, suffix: "", dockerfile: Dockerfile}
+          - {platform: linux/arm64, runner: ubuntu-24.04-arm, role: standalone, suffix: "", dockerfile: Dockerfile}
+          - {platform: linux/amd64, runner: ubuntu-latest, role: server, suffix: "-server", dockerfile: Dockerfile.server}
+          - {platform: linux/arm64, runner: ubuntu-24.04-arm, role: server, suffix: "-server", dockerfile: Dockerfile.server}
+          - {platform: linux/amd64, runner: ubuntu-latest, role: client, suffix: "-client", dockerfile: Dockerfile.client}
+          - {platform: linux/arm64, runner: ubuntu-24.04-arm, role: client, suffix: "-client", dockerfile: Dockerfile.client}
     steps:
       - uses: actions/checkout@v7
 
@@ -65,12 +67,13 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           # Pushed by digest and left untagged: tags belong on the manifest
           # list that the merge job assembles, not on either half of it.
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.role }}-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.role }}-${{ matrix.platform }}
 
       - name: Export digest
         env:
@@ -81,7 +84,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ matrix.role }}-${{ env.PLATFORM_PAIR }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -90,6 +93,12 @@ jobs:
     name: merge manifests and tag
     needs: build
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {role: standalone, suffix: ""}
+          - {role: server, suffix: "-server"}
+          - {role: client, suffix: "-client"}
     steps:
       - uses: actions/checkout@v7
 
@@ -102,7 +111,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-${{ matrix.role }}-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v4
@@ -116,7 +125,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
           tags: |
             type=raw,value=${{ steps.pkg.outputs.version }}
             type=raw,value=v${{ steps.pkg.outputs.version }}
@@ -131,9 +140,9 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}@sha256:%s ' *)
 
       - name: Verify both architectures are present
         run: |
           docker buildx imagetools inspect \
-            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:${{ steps.meta.outputs.version }}"

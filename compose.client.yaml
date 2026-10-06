@@ -1,0 +1,29 @@
+# Run on each filesystem host. Bind to its Tailscale IP for remote central access.
+services:
+  local-mcp-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    image: ghcr.io/tkgstrator/local-mcp-client:latest
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_MCP_CLIENT_BIND_IP:-127.0.0.1}:${LOCAL_MCP_CLIENT_PORT:-8890}:8080"
+    environment:
+      LOCAL_MCP_MODE: client
+      LOCAL_MCP_HOSTNAME: ${LOCAL_MCP_HOSTNAME:?Set the target host name}
+      LOCAL_MCP_ALIASES: ${LOCAL_MCP_ALIASES:-}
+      LOCAL_MCP_TOKEN: ${LOCAL_MCP_CLIENT_TOKEN:?Set a child bearer token of at least 16 characters}
+      LOCAL_MCP_ALLOWED_HOSTS: ${LOCAL_MCP_CLIENT_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      LOCAL_MCP_ALLOW_EXEC: ${LOCAL_MCP_CLIENT_ALLOW_EXEC:-true}
+      LOCAL_MCP_ROOT: /home/vscode/app
+    volumes:
+      - type: bind
+        source: ${LOCAL_MCP_WORKSPACE:?Set the directory this host should expose}
+        target: /home/vscode/app
+        bind:
+          create_host_path: false
+      - local-mcp-client-state:/var/lib/local-mcp
+    # Mount Docker/SSH credentials only when that child's tasks require them.
+
+volumes:
+  local-mcp-client-state:

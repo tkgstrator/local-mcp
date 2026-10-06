@@ -2,10 +2,18 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 
-use crate::root::Root;
+use crate::{
+    connections::{Connections, Mode, selector},
+    root::Root,
+};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub mode: Mode,
+    pub hostname: String,
+    pub aliases: Vec<String>,
+    pub connections: Arc<Connections>,
     pub root: Root,
     pub token: String,
     pub bind: SocketAddr,
@@ -45,6 +53,28 @@ impl Config {
             PathBuf::from(var("LOCAL_MCP_ROOT").unwrap_or_else(|| "/workspace".to_string()));
         let root = Root::new(&root_dir)
             .with_context(|| format!("LOCAL_MCP_ROOT is unusable: {}", root_dir.display()))?;
+
+        let mode = Mode::parse(var("LOCAL_MCP_MODE").as_deref().unwrap_or("standalone"))?;
+        let hostname = selector(&var("LOCAL_MCP_HOSTNAME").unwrap_or_else(|| "local".to_string()))?;
+        if mode == Mode::Client && var("LOCAL_MCP_HOSTNAME").is_none() {
+            bail!("LOCAL_MCP_HOSTNAME is required in client mode");
+        }
+        let aliases = var("LOCAL_MCP_ALIASES")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .map(selector)
+            .collect::<Result<Vec<_>>>()?;
+        let connections = if mode == Mode::Server {
+            let path = var("LOCAL_MCP_CONNECTIONS_FILE")
+                .context("LOCAL_MCP_CONNECTIONS_FILE is required in server mode")?;
+            Arc::new(Connections::load(std::path::Path::new(&path), &root)?)
+        } else {
+            if var("LOCAL_MCP_CONNECTIONS_FILE").is_some() {
+                bail!("LOCAL_MCP_CONNECTIONS_FILE requires server mode");
+            }
+            Arc::new(Connections::default())
+        };
 
         // An unauthenticated instance of this server hands anyone who finds the
         // URL a shell inside the container, so refuse to start without a token.
@@ -135,6 +165,10 @@ impl Config {
         };
 
         Ok(Self {
+            mode,
+            hostname,
+            aliases,
+            connections,
             root,
             token,
             bind,

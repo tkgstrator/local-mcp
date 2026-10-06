@@ -1,0 +1,16 @@
+{
+  "connections": [
+    {
+      "hostname": "workstation",
+      "aliases": ["100.64.0.1"],
+      "url": "http://100.64.0.1:8890/local",
+      "token_file": "/etc/local-mcp/workstation.token"
+    },
+    {
+      "hostname": "gpu-server",
+      "aliases": [],
+      "url": "http://gpu-server:8890/local",
+      "token_file": "/etc/local-mcp/gpu-server.token"
+    }
+  ]
+}

@@ -18,7 +18,12 @@ use rmcp::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{config::Config, exec_ops::Jobs, fs_ops};
+use crate::{
+    config::Config,
+    connections::{self, Mode},
+    exec_ops::Jobs,
+    fs_ops,
+};
 
 const EXEC_TOOLS: [&str; 4] = ["execute", "start_command", "poll_job", "stop_job"];
 
@@ -121,6 +126,10 @@ fn job_id(raw: &str) -> Result<Uuid, McpError> {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadFileArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Path relative to the sandbox root.
     pub path: String,
     /// Zero-based line number to start from.
@@ -131,6 +140,10 @@ pub struct ReadFileArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct WriteFileArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Path relative to the sandbox root. Parent directories are created.
     pub path: String,
     /// Full contents to write, replacing anything already there.
@@ -139,6 +152,10 @@ pub struct WriteFileArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EditFileArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Path relative to the sandbox root.
     pub path: String,
     /// Exact text to replace. Must occur exactly once in the file.
@@ -149,6 +166,10 @@ pub struct EditFileArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListDirArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Directory relative to the sandbox root. Defaults to the root.
     pub path: Option<String>,
     /// How deep to descend. Defaults to 1.
@@ -157,6 +178,10 @@ pub struct ListDirArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Rust regular expression to match against each line.
     pub pattern: String,
     /// Directory to search under. Defaults to the sandbox root.
@@ -167,12 +192,20 @@ pub struct SearchArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CommandArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Shell command, run with `sh -c` from the sandbox root.
     pub command: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct JobArgs {
+    /// Registered hostname or Tailscale IP alias. Required on the central server.
+    #[serde(rename = "connection")]
+    #[schemars(rename = "connection")]
+    pub _connection: Option<String>,
     /// Job id returned by `execute` or `start_command`.
     pub job_id: String,
 }
@@ -190,6 +223,29 @@ impl LocalMcp {
             config,
             jobs,
             tool_router,
+        }
+    }
+
+    #[tool(
+        description = "List registered filesystem hosts, root directories, availability and shell capability. Use a hostname or IP alias as connection on subsequent tools."
+    )]
+    async fn connections(&self) -> Result<CallToolResult, McpError> {
+        if self.config.mode == Mode::Server {
+            text(
+                self.config
+                    .connections
+                    .list(self.config.allow_exec)
+                    .await
+                    .to_string(),
+            )
+        } else {
+            Ok(connections::local_info(
+                self.config.mode,
+                &self.config.hostname,
+                &self.config.aliases,
+                &self.config.root,
+                self.config.allow_exec,
+            ))
         }
     }
 
@@ -334,6 +390,75 @@ impl LocalMcp {
     }
 }
 
+impl LocalMcp {
+    fn offered_tools(&self) -> Vec<rmcp::model::Tool> {
+        let mut tools = self.tool_router.list_all();
+        if self.config.mode == Mode::Server {
+            for tool in tools.iter_mut().filter(|t| t.name != "connections") {
+                let schema = Arc::make_mut(&mut tool.input_schema);
+                let required = schema
+                    .entry("required")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(list) = required.as_array_mut() {
+                    list.push(serde_json::json!("connection"));
+                }
+            }
+        }
+        tools
+    }
+
+    async fn dispatch(
+        &self,
+        mut request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        if !self
+            .tool_router
+            .list_all()
+            .iter()
+            .any(|t| t.name == request.name)
+        {
+            return Err(McpError::method_not_found::<
+                rmcp::model::CallToolRequestMethod,
+            >());
+        }
+        if request.name != "connections" {
+            let selected = request.arguments.as_ref().and_then(|a| a.get("connection"));
+            if self.config.mode == Mode::Server {
+                let name = selected
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| {
+                        McpError::invalid_params(
+                            "connection is required; use connections to list hosts",
+                            None,
+                        )
+                    })?
+                    .to_string();
+                if let Some(args) = request.arguments.as_mut() {
+                    args.remove("connection");
+                }
+                return self.config.connections.call(&name, request).await;
+            }
+            if let Some(value) = selected.filter(|v| !v.is_null()) {
+                let name = value
+                    .as_str()
+                    .and_then(|s| connections::selector(s).ok())
+                    .ok_or_else(|| McpError::invalid_params("invalid connection selector", None))?;
+                if name != self.config.hostname && !self.config.aliases.contains(&name) {
+                    return Err(McpError::invalid_params(
+                        "connection does not identify this host",
+                        None,
+                    ));
+                }
+            }
+        }
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+}
+
 // Without an explicit router the macro rebuilds `Self::tool_router()` per call,
 // which would silently resurrect the tools removed in `new`.
 #[tool_handler(router = self.tool_router)]
@@ -353,10 +478,7 @@ impl ServerHandler for LocalMcp {
         tracing::info!(%tool, arguments = %arguments(request.arguments.as_ref()), "tool call");
 
         let started = Instant::now();
-        let outcome = self
-            .tool_router
-            .call(ToolCallContext::new(self, request, context))
-            .await;
+        let outcome = self.dispatch(request, context).await;
         let elapsed_ms = started.elapsed().as_millis();
 
         match &outcome {
@@ -388,7 +510,7 @@ impl ServerHandler for LocalMcp {
 
         Ok(ListToolsResult {
             result_type: Some(ResultType::COMPLETE),
-            tools: self.tool_router.list_all(),
+            tools: self.offered_tools(),
             meta: None,
             next_cursor: None,
             ttl_ms,
@@ -414,10 +536,11 @@ impl ServerHandler for LocalMcp {
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(implementation)
-            .with_instructions(format!(
-                "File tools are confined to {root}; their paths are relative to that root \
-                 and cannot escape it.{shell}"
-            ))
+            .with_instructions(if self.config.mode == Mode::Server {
+                "Call connections to discover hosts. Every file or command tool requires connection: the target workspace hostname or registered IP alias. Paths are relative to that child's root. Keep the same connection for poll_job/stop_job. Never guess a host, automatically retry writes/commands, or fall back to another host after failure.".to_string()
+            } else {
+                format!("File tools are confined to {root}; their paths are relative to that root and cannot escape it.{shell}")
+            })
     }
 }
 
@@ -430,6 +553,10 @@ mod tests {
 
     fn config(root: Root) -> Arc<Config> {
         Arc::new(Config {
+            mode: Mode::Standalone,
+            hostname: "local".to_string(),
+            aliases: Vec::new(),
+            connections: Arc::new(connections::Connections::default()),
             root,
             token: "0123456789abcdef".to_string(),
             bind: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
@@ -443,6 +570,22 @@ mod tests {
             session_keep_alive: None,
             session_retention: Duration::from_secs(60 * 60 * 24 * 30),
         })
+    }
+
+    #[test]
+    fn fixed_tools_include_connections_and_a_host_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(Root::new(dir.path()).unwrap());
+        let server = LocalMcp::new(config.clone(), Jobs::new(config.job_retention));
+        let tools = server.tool_router.list_all();
+        assert!(tools.iter().any(|tool| tool.name == "connections"));
+        for tool in tools.iter().filter(|tool| tool.name != "connections") {
+            assert!(
+                tool.input_schema["properties"].get("connection").is_some(),
+                "{}",
+                tool.name
+            );
+        }
     }
 
     fn body(result: &CallToolResult) -> String {
@@ -469,6 +612,7 @@ mod tests {
 
         let started = first
             .start_command(Parameters(CommandArgs {
+                _connection: None,
                 command: "echo across-sessions".to_string(),
             }))
             .await
@@ -487,7 +631,10 @@ mod tests {
             .expect("echo finishes well inside the timeout");
 
         let polled = second
-            .poll_job(Parameters(JobArgs { job_id: id }))
+            .poll_job(Parameters(JobArgs {
+                _connection: None,
+                job_id: id,
+            }))
             .await
             .expect("the second session knows the job the first one started");
         let report = body(&polled);

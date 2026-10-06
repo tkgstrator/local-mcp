@@ -14,3 +14,11 @@ Dockerfile
 .dockerignore
 README.md
 CHANGELOG.md
+
+# Private multi-host registry / credential files
+/config/
+*.token
+
+# Python integration test caches
+__pycache__/
+*.pyc

@@ -110,3 +110,11 @@ $RECYCLE.BIN/
 # Read by docker compose. Holds LOCAL_MCP_TOKEN and TUNNEL_TOKEN, so it stays
 # out of the repository — the README says how to regenerate it.
 .env
+
+# Private multi-host registry / credential files
+/config/
+*.token
+
+# Python integration test caches
+__pycache__/
+*.pyc

@@ -1,0 +1,28 @@
+# One central endpoint. Registry/tokens are outside the (empty) filesystem root.
+services:
+  local-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: ghcr.io/tkgstrator/local-mcp-server:latest
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_MCP_SERVER_BIND_IP:-127.0.0.1}:${LOCAL_MCP_SERVER_PORT:-8891}:8080"
+    environment:
+      LOCAL_MCP_MODE: server
+      LOCAL_MCP_TOKEN: ${LOCAL_MCP_SERVER_TOKEN:?Set a central bearer token of at least 16 characters}
+      LOCAL_MCP_CONNECTIONS_FILE: /etc/local-mcp/connections.json
+      LOCAL_MCP_ALLOWED_HOSTS: ${LOCAL_MCP_SERVER_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      LOCAL_MCP_PUBLIC_URL: ${LOCAL_MCP_SERVER_PUBLIC_URL:-}
+      LOCAL_MCP_ALLOW_EXEC: ${LOCAL_MCP_SERVER_ALLOW_EXEC:-true}
+    volumes:
+      - type: bind
+        source: ${LOCAL_MCP_CONFIG_DIR:?Set a private config directory outside exposed workspaces}
+        target: /etc/local-mcp
+        read_only: true
+        bind:
+          create_host_path: false
+      - local-mcp-server-state:/var/lib/local-mcp
+
+volumes:
+  local-mcp-server-state:

@@ -1,0 +1,13 @@
+# Multi-host LocalMCP
+
+The user wants one central MCP registration and child servers on every filesystem host. Keep one fixed set of tools. Accept an explicit `connection` hostname or registered Tailscale IP alias on every operation, and expose `connections` (shown as `localmcp_connections` by LocalGPT). A caller-supplied hostname identifies the workspace host, which can differ from the Codex execution host.
+
+Modes: `standalone` (default, backward compatible), `client` (child, local filesystem), `server` (central router, no local file/command execution). The central router requires an explicit connection even with one child. Children reject foreign connection selectors. Do not implement ChatGPT text-to-tool mediation or LocalGPT session binding in this repository.
+
+Connections are loaded at startup from an administrator-controlled JSON file outside the filesystem root. Entries contain hostname, optional aliases, URL ending in /local, and token_file outside the root. Tokens are at least 16 characters, are never returned in discovery, and are sent only to the configured URL. HTTP supports Tailscale/private networks; HTTPS supports other deployments. Reject duplicate selectors, URL credentials/query/fragment, and redirects. Configured files and token files must not be reachable through file tools, including symlinks.
+
+Use the Rust MCP client SDK with persistent per-child connections. Discovery queries children for root, shell capability and reachability. Unreachable children remain listed. All tools route to the explicitly selected child. The central exec-disable setting applies to forwarding as well. Job operations require the same connection used to create the job. No automatic retries or fallback after tool submission; transport failure reports unknown execution outcome.
+
+Dockerfile.server is a non-root minimal runtime without host filesystem mounts, shells for user work, or development toolchains. Dockerfile.client retains the current development runtime and sets client mode. The existing Dockerfile remains compatible for standalone deployments. Supply separate server/client compose examples with static secrets, persistent state and explicitly configurable published ports. Do not alter live GPU deployment or publish GitHub images without a separate deployment step.
+
+Verification: preserve existing suite; cover discovery/schema, required/unknown connection, aliases and duplicate validation, secret/root isolation, real two-child MCP read/write/edit routing, background jobs, disabled exec, upstream failures and secret-free discovery. Build both Docker roles, run formatter and clippy. Document setup and remaining LocalGPT integration work.

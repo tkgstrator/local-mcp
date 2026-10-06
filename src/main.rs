@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod connections;
 mod exec_ops;
 mod fs_ops;
 mod oauth;

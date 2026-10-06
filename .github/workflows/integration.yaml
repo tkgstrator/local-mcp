@@ -79,18 +79,24 @@ jobs:
       # The path-containment tests in src/root.rs are the ones that matter:
       # they are what stops a caller from reaching outside the sandbox root.
       - run: cargo test --all-features --workspace --locked
+      - run: cargo build --locked
+      - run: python3 tests/multi_host.py
 
   image:
     name: docker build
     runs-on: ubuntu-latest
     # On master the deployment workflow builds and pushes the same image.
     if: github.ref != 'refs/heads/master'
+    strategy:
+      matrix:
+        dockerfile: [Dockerfile, Dockerfile.server, Dockerfile.client]
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.dockerfile }}
