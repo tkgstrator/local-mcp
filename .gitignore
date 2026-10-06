@@ -91,9 +91,9 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/rust,macos,windows,linux
 
-# ============================================================================
+# =====================================================================
 # Custom additions
-# ============================================================================
+# =====================================================================
 
 # === Agents ===
 .claude/
@@ -118,3 +118,6 @@ $RECYCLE.BIN/
 # Python integration test caches
 __pycache__/
 *.pyc
+
+# Local Codex configuration, credentials, and session state.
+/.codex/
