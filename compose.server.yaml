@@ -24,5 +24,50 @@ services:
           create_host_path: false
       - local-mcp-server-state:/var/lib/local-mcp
 
+  # Optional: docker compose --profile secure-tunnel up -d --build --no-deps secure-mcp-tunnel
+  secure-mcp-tunnel:
+    profiles: ["secure-tunnel"]
+    build:
+      context: .
+      dockerfile: Dockerfile.tunnel
+    image: local-mcp-secure-tunnel:v0.0.15
+    pull_policy: never
+    # Match the owner of the private config and secret files.
+    user: "${LOCAL_MCP_TUNNEL_UID:-1000}:${LOCAL_MCP_TUNNEL_GID:-1000}"
+    # Shares the server's network namespace: no ports, target is loopback.
+    # After restarting/recreating local-mcp-server, force-recreate this too.
+    network_mode: "service:local-mcp-server"
+    depends_on:
+      - local-mcp-server
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ${LOCAL_MCP_TUNNEL_CONFIG_DIR:-${HOME}/.config/local-mcp-tunnel}/docker.yaml
+        target: /etc/tunnel-client/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - mcp-authorization
+      - openai-runtime-key
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 3 http://127.0.0.1:8080/healthz >/dev/null && curl -fsS --max-time 3 http://127.0.0.1:8081/readyz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+secrets:
+  mcp-authorization:
+    file: ${LOCAL_MCP_TUNNEL_CONFIG_DIR:-${HOME}/.config/local-mcp-tunnel}/mcp-authorization
+  openai-runtime-key:
+    file: ${LOCAL_MCP_TUNNEL_CONFIG_DIR:-${HOME}/.config/local-mcp-tunnel}/openai-runtime-key
+
 volumes:
   local-mcp-server-state:

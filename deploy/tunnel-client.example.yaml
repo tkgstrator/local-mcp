@@ -1,0 +1,35 @@
+# Copy outside exposed workspaces as docker.yaml, replace the tunnel ID.
+# Secret files contain the runtime key and the complete "Bearer <token>" header.
+config_version: 1
+control_plane:
+  base_url: "https://api.openai.com"
+  tunnel_id: "tunnel_0123456789abcdef0123456789abcdef"
+  api_key: "file:/run/secrets/openai-runtime-key"
+health:
+  listen_addr: "127.0.0.1:8081"
+admin_ui:
+  open_browser: false
+log:
+  level: info
+  format: json
+mcp:
+  server_urls:
+    - channel: main
+      url: "http://127.0.0.1:8080/local"
+  extra_headers:
+    Authorization: "file:/run/secrets/mcp-authorization"
+  discovery_extra_headers:
+    Authorization: "file:/run/secrets/mcp-authorization"
+# The proxy's internal "harpoon" discovery needs one target to answer its MCP
+# initialize/tools/list. Keep it to the exact health-only endpoint, no
+# redirects, and no host-based loopback/private discovery. Keep upstream
+# OAuth disabled for this static-bearer setup; OAuth policies may add targets.
+harpoon:
+  allow_plaintext_http: true
+  max_redirects: 0
+  hosts_include_loopback: false
+  hosts_include_private: false
+  targets:
+    - label: localmcp-health
+      url: "http://127.0.0.1:8080/healthz"
+      description: LocalMCP health

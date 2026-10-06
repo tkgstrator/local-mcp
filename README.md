@@ -376,6 +376,59 @@ Nothing is published to the host, so the tunnel is the only way in. That is what
 makes the bearer token the whole boundary rather than a second lock behind a
 firewall.
 
+### Secure MCP Tunnel sidecar (central `compose.server.yaml` only)
+
+The standalone Cloudflare `compose.yaml` above remains the existing
+alternative. For the central server there is an optional `secure-tunnel`
+profile with a `secure-mcp-tunnel` service. It is off unless the profile is
+enabled, so `compose.server.yaml` config and start are unchanged without it.
+
+It joins `local-mcp-server`'s network namespace (`network_mode`), publishes no
+ports, mounts no workspace or socket, and targets `http://127.0.0.1:8080/local`.
+It runs read-only with all capabilities dropped, `no-new-privileges`, a tmpfs
+`/tmp`, and `restart: unless-stopped`; health checks the central `/healthz`
+and tunnel `/readyz`. Set `LOCAL_MCP_TUNNEL_UID` and `LOCAL_MCP_TUNNEL_GID`
+to the private files' owner (`id -u` and `id -g`); defaults are 1000:1000.
+The client binary is
+pinned to v0.0.15 by sha256 (amd64 and arm64) in `Dockerfile.tunnel`; changing
+the version means updating the hashes.
+
+Setup:
+
+1. Create the tunnel in your OpenAI account and note the tunnel id and API key.
+2. Outside any workspace, in `LOCAL_MCP_TUNNEL_CONFIG_DIR` (default
+   `${HOME}/.config/local-mcp-tunnel`), create `docker.yaml` from
+   `deploy/tunnel-client.example.yaml`, and two 0600 files:
+   `openai-runtime-key` (the key) and `mcp-authorization`
+   (`Bearer <LOCAL_MCP_SERVER_TOKEN>`). They are mounted read-only as
+   `/run/secrets/...`; nothing secret goes in YAML or environment variables.
+   If the central token is rotated, update `mcp-authorization` and recreate
+   the sidecar. Keep `127.0.0.1` in the central Host allowlist.
+3. Start it, only once the central server's compose project exists:
+   `docker compose -f compose.server.yaml --profile secure-tunnel up -d --build --no-deps secure-mcp-tunnel`
+   Use the same project name, `--env-file`, and all `-f` files as the running
+   central deployment. Add the profile/service arguments to that existing
+   command; a different project would target a different central container.
+4. In ChatGPT, set the connection to the tunnel with authentication **None**
+   (no OAuth; the tunnel adds the bearer header).
+
+If the central `local-mcp-server` is restarted or recreated, the sidecar's shared network
+namespace goes stale: force-recreate it too (`up -d --force-recreate --no-deps
+secure-mcp-tunnel`). `restart` is not sufficient.
+
+The example config also enables the client's internal `harpoon` MCP channel
+with one exact `/healthz` target. This lets internal `initialize` and
+`tools/list` probes succeed instead of returning "unsupported channel".
+Redirects and loopback/private host discovery are disabled; the main
+`/local` channel keeps its bearer header. This fixes channel routing;
+ChatGPT app-registration errors need separate verification. Run the isolated
+routing regression with `python3 tests/tunnel_harpoon.py --binary /path/to/tunnel-client`
+using the pinned v0.0.15 client; it uses a temporary local backend and no real keys.
+
+The example tunnel ID is a placeholder. Configure your account's actual ID
+and runtime key before starting. Only claim the external connection works
+after the container is healthy and ChatGPT can list connections and read a file.
+
 ### Reaching other machines
 
 The tunnel is how requests get in. This is the other direction: `execute` running
