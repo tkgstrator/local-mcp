@@ -110,3 +110,6 @@ $RECYCLE.BIN/
 # Read by docker compose. Holds LOCAL_MCP_TOKEN and TUNNEL_TOKEN, so it stays
 # out of the repository — the README says how to regenerate it.
 .env
+
+# Local Codex configuration, credentials, and session state.
+/.codex/
