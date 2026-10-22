@@ -29,7 +29,7 @@ RUN cargo build --release --locked
 # given at the top of the file.
 FROM ghcr.io/astral-sh/uv:0.12.6 AS uv
 FROM oven/bun:1.4.0-slim AS bun
-FROM node:24.19.0-bookworm-slim AS node
+FROM node:24.22.1-bookworm-slim AS node
 FROM rust:slim-bookworm AS rust
 FROM tailscale/tailscale:v1.102.3 AS tailscale
 
